@@ -1,48 +1,51 @@
 """
-runner.py — Unified live loop. Every 5m boundary:
+runner.py — Unified live loop. Every 5m boundary, for every tracked symbol:
   1. Pull fresh Binance 5m (and 1m for zones) data.
-  2. meanrev: evaluate -> if signal, snapshot Polymarket book, log a BET to DB.
-  3. gaptrav: if just-closed bar closed in a gap, log a forex TRADE (paper) to DB.
-  4. Resolve any open bets/trades whose outcome is now known.
+  2. Evaluate every strategy in strategies.STRATEGIES and log to the DB:
+       - binary  strategies -> a next-bar-close prediction (spot bps), and for
+                  meanrev on BTC/ETH also a real Polymarket book snapshot + bet.
+       - bracket strategies -> an SL/TP paper trade (entry/stop/target).
+  3. Resolve anything whose outcome is now known.
 
-Both strategies write to the same SQLite DB (db.py); the dashboard reads it.
-meanrev = LIVE candidate (Polymarket). gaptrav = paper experiment.
+Symbols: BTC/ETH (Polymarket-eligible) + majors (spot-paper only). Timeframe:
+5m only. meanrev is the one LIVE candidate; everything else is paper / data
+collection — honest status lives in strategies.STRATEGIES and the dashboard.
 
-Connectivity: needs api.binance.com (works from IN; geo-blocked from the build
-container). Run `python3 runner.py --probe` first. Polymarket book + market
-discovery reuse paper_trader.py helpers (verified working).
+Connectivity: needs api.binance.com (geo-blocked from US — worker runs in
+Frankfurt). `python runner.py --probe` for a one-shot check.
 
 Usage:
-  python3 runner.py            # live loop
-  python3 runner.py --probe    # one-shot connectivity check
-  python3 runner.py --once     # single cycle (for cron-style runs)
+  python runner.py            # live loop
+  python runner.py --probe    # one-shot connectivity + signal check
+  python runner.py --once     # single cycle (cron-style)
 """
+import json
 import sys
 import time
+import urllib.request
+
 import numpy as np
 import pandas as pd
 
 import db
-from strategies import meanrev_signal, gaptrav_open, current_zone_bands
-import paper_trader as pt   # reuse klines(), find_market(), best_book(), taker_fill(), fee_fraction()
+import strategies as S
+import paper_trader as pt   # klines(), find_market(), best_book(), taker_fill(), fee_fraction(), candle_outcome()
 
-COINS = {"btc": "BTCUSDT", "eth": "ETHUSDT"}
+# Polymarket has 5m Up/Down markets only for BTC/ETH -> those get real bets.
+POLY = {"btc": "BTCUSDT", "eth": "ETHUSDT"}
+# Majors: spot-paper only (no Polymarket market). Add/remove here.
+MAJORS = {"sol": "SOLUSDT", "xrp": "XRPUSDT", "doge": "DOGEUSDT", "bnb": "BNBUSDT"}
+SYMBOLS = {**POLY, **MAJORS}
+
 SIZE_USD = 100.0
-GAP_FX_UNITS = 1.0
-WIN = 300
-
-
-def fetch(symbol, interval, limit):
-    return pt.klines.__wrapped__(symbol, limit) if hasattr(pt.klines, "__wrapped__") \
-        else _klines(symbol, interval, limit)
-
+WIN = 300                       # 5m in seconds
+BRACKET_MAXBARS = 24           # 2h cap for SL/TP traversal resolution
 
 _BINANCE_HOSTS = ["https://api.binance.com", "https://data-api.binance.vision",
                   "https://api1.binance.com", "https://api2.binance.com"]
 
 
 def _klines(symbol, interval, limit):
-    import json, urllib.request
     last_err = None
     for host in _BINANCE_HOSTS:
         try:
@@ -61,63 +64,137 @@ def _klines(symbol, interval, limit):
     raise RuntimeError(f"all Binance hosts failed (geo-block?): {last_err}")
 
 
+def _one_candle(symbol, start_ms):
+    """Return (open, high, low, close) for the 5m candle at start_ms."""
+    for host in _BINANCE_HOSTS:
+        try:
+            raw = json.loads(urllib.request.urlopen(
+                f"{host}/api/v3/klines?symbol={symbol}&interval=5m"
+                f"&startTime={start_ms}&limit=1", timeout=15).read())
+            r = raw[0]
+            return float(r[1]), float(r[2]), float(r[3]), float(r[4])
+        except Exception:
+            continue
+    raise RuntimeError("candle fetch failed")
+
+
+# --------------------------- recording helpers ---------------------------
+def _record_binary(strat, symbol, dirn, rule, boundary, entry, detail=None):
+    """A next-5m-close prediction, stored in trades with stop/target NULL and
+    ts=boundary (the window it predicts). dirn: +1 up / -1 down."""
+    sid = db.record_signal(strat, symbol, "5m", dirn, rule, detail=detail or {})
+    db.record_trade(sid, symbol, "long" if dirn > 0 else "short",
+                    round(entry, 6), None, None, ts=boundary)
+
+
+def _record_bracket(strat, symbol, tr, detail=None):
+    sid = db.record_signal(strat, symbol, "5m", tr["direction"],
+                           tr.get("rule", strat), detail=detail or {})
+    entry = float(tr["entry"])
+    db.record_trade(sid, symbol, "long" if tr["direction"] > 0 else "short",
+                    round(entry, 6), round(float(tr["stop"]), 6),
+                    round(float(tr["target"]), 6))
+
+
+def _maybe_bet(coin, symbol, side, rule, boundary, probe):
+    """meanrev on BTC/ETH -> snapshot Polymarket book and log a real bet."""
+    mkt, slug = pt.find_market(coin, boundary)
+    if not mkt:
+        if probe:
+            print(f"  [{coin}] polymarket market not found: {slug}")
+        return
+    token = mkt.get(side)
+    bids, asks = pt.best_book(token)
+    fill, depth = pt.taker_fill(asks, SIZE_USD)
+    if probe:
+        print(f"  [{coin}] {slug} ask={asks[0][0] if asks else None} depth={depth}")
+        return
+    if not fill:
+        return
+    sid = db.record_signal("meanrev", symbol, "5m",
+                           1 if side == "Up" else -1, rule,
+                           detail={"slug": slug, "depth": depth})
+    db.record_bet(sid, symbol, side, bids[0][0] if bids else None,
+                  asks[0][0] if asks else None, round(fill, 4),
+                  round(pt.fee_fraction(fill), 5), boundary)
+    print(f"  BET {coin} {side} @ {fill:.3f} ({rule})")
+
+
+# ------------------------------- cycle -----------------------------------
 def cycle(probe=False):
     boundary = (int(time.time()) // WIN) * WIN
-    for coin, symbol in COINS.items():
+    for coin, symbol in SYMBOLS.items():
         try:
             df5 = _klines(symbol, "5m", 300)
             df1 = _klines(symbol, "1m", 1500)
         except Exception as e:
             print(f"[{coin}] binance error: {e}"); continue
-        df5 = df5[df5.ts < boundary * 1000]          # only closed bars
+        df5 = df5[df5.ts < boundary * 1000].reset_index(drop=True)   # closed bars only
         if len(df5) < 200:
             continue
-
-        # ---- Strategy A: meanrev -> Polymarket bet ----
-        side, rule = meanrev_signal(df5)
+        entry = float(df5["close"].iloc[-1])
         if probe:
-            print(f"[{coin}] meanrev={side or 'none'}", end="  ")
-        if side and not probe:
-            mkt, slug = pt.find_market(coin, boundary)
-            if mkt:
-                token = mkt.get(side)
-                bids, asks = pt.best_book(token)
-                fill, depth = pt.taker_fill(asks, SIZE_USD)
-                if fill:
-                    sid = db.record_signal("meanrev", symbol, "5m",
-                                           1 if side == "Up" else -1, rule,
-                                           detail={"slug": slug, "depth": depth})
-                    db.record_bet(sid, symbol, side,
-                                  bids[0][0] if bids else None,
-                                  asks[0][0] if asks else None, round(fill, 4),
-                                  round(pt.fee_fraction(fill), 5), boundary)
-                    print(f"BET {coin} {side} @ {fill:.3f} ({rule})")
+            print(f"[{coin}] {symbol} bars={len(df5)} close={entry}")
 
-        # ---- Strategy B: gaptrav -> forex paper trade ----
-        bands = current_zone_bands(df5.tail(200).reset_index(drop=True),
-                                   df1.tail(1500).reset_index(drop=True))
-        if bands:
-            tr = gaptrav_open(df5, bands)
+        # ---- binary: meanrev (spot for all; Polymarket bet for BTC/ETH) ----
+        side, rule = S.meanrev_signal(df5)
+        if side:
+            dirn = 1 if side == "Up" else -1
+            if not probe:
+                _record_binary("meanrev_spot", symbol, dirn, rule, boundary, entry)
+            if coin in POLY:
+                _maybe_bet(coin, symbol, side, rule, boundary, probe)
             if probe:
-                print(f"gaptrav={'gap-close' if tr else 'none'}")
-            if tr and not probe:
-                entry = df5["close"].iloc[-1]        # paper: approximate next open
-                sid = db.record_signal("gaptrav", symbol, "5m", tr["direction"],
-                                       "gap_close", detail={"gap": tr["gap"]})
-                db.record_trade(sid, symbol,
-                                "long" if tr["direction"] > 0 else "short",
-                                round(entry, 2), round(tr["stop"], 2),
-                                round(tr["target"], 2))
-                print(f"TRADE {coin} {'long' if tr['direction']>0 else 'short'} "
-                      f"tgt={tr['target']:.0f} stop={tr['stop']:.0f}")
+                print(f"  meanrev={side} ({rule})")
+
+        # ---- binary: wick_fade ----
+        d, r = S.wick_fade_signal(df5)
+        if d and not probe:
+            _record_binary("wick_fade", symbol, d, r, boundary, entry)
+        if probe and d:
+            print(f"  wick_fade={'Up' if d>0 else 'Down'} ({r})")
+
+        # ---- binary: zone_break_bias ----
+        d, r = S.zone_break_bias_signal(df5, df1)
+        if d and not probe:
+            _record_binary("zone_break_bias", symbol, d, r, boundary, entry)
+        if probe and d:
+            print(f"  zone_break_bias={'Up' if d>0 else 'Down'} ({r})")
+
+        # ---- bracket family: gap zones (shared) ----
+        bands = S.current_zone_bands(df5.tail(200).reset_index(drop=True),
+                                     df1.tail(1500).reset_index(drop=True))
+        if bands:
+            brackets = {
+                "gaptrav": S.gaptrav_open(df5, bands),
+                "gaptrav_tight": S.gaptrav_tight_open(df5, bands),
+                "meanrev_confluence": S.meanrev_confluence_open(df5, bands),
+                "far_targets": S.far_targets_open(df5, bands),
+            }
+            for strat, tr in brackets.items():
+                if not tr:
+                    continue
+                tr = dict(tr); tr["entry"] = entry
+                # validity: target must be ahead and stop behind the entry
+                if (tr["target"] - entry) * tr["direction"] <= 0:
+                    continue
+                if (entry - tr["stop"]) * tr["direction"] <= 0:
+                    continue
+                if probe:
+                    print(f"  {strat}={'long' if tr['direction']>0 else 'short'} "
+                          f"tgt={tr['target']:.4g} stop={tr['stop']:.4g}")
+                else:
+                    _record_bracket(strat, symbol, tr, detail={"gap": tr.get("gap")})
         elif probe:
-            print()
+            print("  (no zone bands)")
 
 
+# ------------------------------ resolve ----------------------------------
 def resolve():
     bets, trades = db.open_positions()
     now_ms = time.time() * 1000
-    for b in bets:
+
+    for b in bets:                                  # Polymarket binary bets
         end = (b["window_start"] + WIN) * 1000
         if now_ms < end + 8000:
             continue
@@ -131,19 +208,39 @@ def resolve():
         pnl = round(shares * won - SIZE_USD - fee, 2)
         db.resolve_bet(b["id"], out, won, pnl)
         print(f"  resolved BET {b['symbol']} {b['side']} -> {out} pnl={pnl}")
-    # forex trades: resolve from 5m candles after entry (touch target / close stop)
+
     for t in trades:
+        if t["target"] is None:                     # binary next-bar prediction
+            boundary = int(t["ts"])
+            if now_ms < (boundary + WIN) * 1000 + 8000:
+                continue
+            try:
+                o, _h, _l, c = _one_candle(t["symbol"], boundary * 1000)
+            except Exception:
+                continue
+            d = 1 if t["side"] == "long" else -1
+            up = c >= o
+            won = int((up and d > 0) or (not up and d < 0))
+            ret = d * (c - o) / o * 1e4
+            db.resolve_trade(t["id"], round(c, 6), "up" if up else "down",
+                             won, round(ret, 1), 1)
+            print(f"  resolved {t['symbol']} {t['side']} (binary) -> "
+                  f"{'up' if up else 'down'} {ret:+.0f}bps")
+            continue
+
+        # bracket SL/TP traversal
         try:
             df = _klines(t["symbol"], "5m", 60)
         except Exception:
             continue
-        entry_ms = t["ts"] * 1000
-        seg = df[df.ts > entry_ms]
+        seg = df[df.ts > t["ts"] * 1000]
         if len(seg) < 1:
             continue
         d = 1 if t["side"] == "long" else -1
-        outcome = None; exit_p = None
-        for _, row in seg.iterrows():
+        outcome = exit_p = None
+        for i, (_, row) in enumerate(seg.iterrows()):
+            if i >= BRACKET_MAXBARS:
+                break
             stop_hit = (row.close <= t["stop"]) if d > 0 else (row.close >= t["stop"])
             tgt_hit = (row.high >= t["target"]) if d > 0 else (row.low <= t["target"])
             if stop_hit:
@@ -153,7 +250,7 @@ def resolve():
         if outcome:
             ret = d * (exit_p - t["entry"]) / t["entry"] * 1e4
             db.resolve_trade(t["id"], exit_p, outcome, int(outcome == "target"),
-                             round(ret, 1), len(seg))
+                             round(ret, 1), min(len(seg), BRACKET_MAXBARS))
             print(f"  resolved TRADE {t['symbol']} {t['side']} -> {outcome} {ret:+.0f}bps")
 
 
@@ -164,7 +261,8 @@ if __name__ == "__main__":
     if "--once" in sys.argv:
         cycle(); resolve(); sys.exit()
     target = "Postgres/Neon" if db.IS_PG else db.DB_PATH
-    print(f"runner live | meanrev(Polymarket) + gaptrav(forex paper) -> {target}")
+    print(f"runner live | {len(S.STRATEGIES)} strategies x {len(SYMBOLS)} symbols "
+          f"(5m) -> {target}")
     while True:
         now = time.time()
         nxt = (int(now) // WIN + 1) * WIN

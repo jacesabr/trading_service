@@ -159,6 +159,37 @@ def stats(strategy=None):
     return bets, trades
 
 
+def activity():
+    """Per-strategy operational state: last signal time, total + pending count.
+    Returns {strategy: {last_ts, n_sig, pending}}."""
+    out = {}
+    for r in _rows("SELECT strategy, MAX(ts) AS last_ts, COUNT(*) AS n "
+                   "FROM signals GROUP BY strategy"):
+        out[r["strategy"]] = dict(last_ts=int(r["last_ts"] or 0),
+                                  n_sig=int(r["n"]), pending=0)
+    for tbl in ("bets", "trades"):
+        for r in _rows(f"SELECT s.strategy AS strategy, COUNT(*) AS c "
+                       f"FROM {tbl} x JOIN signals s ON x.signal_id=s.id "
+                       f"WHERE x.outcome='' GROUP BY s.strategy"):
+            out.setdefault(r["strategy"],
+                           dict(last_ts=0, n_sig=0, pending=0))
+            out[r["strategy"]]["pending"] += int(r["c"])
+    return out
+
+
+def recent_trades(limit=400):
+    """Resolved trades joined with strategy, newest first (for per-trade logs)."""
+    return _rows("SELECT t.*, s.strategy FROM trades t JOIN signals s "
+                 "ON t.signal_id=s.id WHERE t.outcome!='' "
+                 f"ORDER BY t.ts DESC LIMIT {int(limit)}")
+
+
+def recent_bets(limit=400):
+    return _rows("SELECT b.*, s.strategy FROM bets b JOIN signals s "
+                 "ON b.signal_id=s.id WHERE b.outcome!='' "
+                 f"ORDER BY b.ts DESC LIMIT {int(limit)}")
+
+
 if __name__ == "__main__":
     init()
     print(f"initialized ({'Postgres/Neon' if IS_PG else 'SQLite'})")
