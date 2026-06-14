@@ -1,0 +1,11 @@
+[
+  {"name": "overbought_strong", "dir": -1, "conditions": [
+      {"feature": "rsi7", "op": ">", "thr": 71},
+      {"feature": "bb_z", "op": ">", "thr": 1.65}]},
+  {"name": "overbought_rsi14_bbz", "dir": -1, "conditions": [
+      {"feature": "rsi14", "op": ">", "thr": 60},
+      {"feature": "bb_z", "op": ">", "thr": 2.0}]},
+  {"name": "oversold_bounce", "dir": 1, "conditions": [
+      {"feature": "rsi7", "op": "<", "thr": 33},
+      {"feature": "bb_z", "op": "<", "thr": -1.65}]}
+]

@@ -1,0 +1,32 @@
+# Render blueprint — push this repo to GitHub, then Render -> New -> Blueprint.
+# Provisions: 1 free web service (dashboard) + 1 paid worker (runner).
+# Set DATABASE_URL (Neon pooled string), NVIDIA_API_KEY, ANTHROPIC_API_KEY
+# in the env of BOTH services after first deploy.
+services:
+  - type: web
+    name: signal-dashboard
+    runtime: python
+    plan: free
+    region: frankfurt            # any region ok for the dashboard
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn dashboard_db:app --bind 0.0.0.0:$PORT --workers 2 --timeout 60
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: SIZE_USD
+        value: "100"
+
+  - type: worker
+    name: signal-runner
+    runtime: python
+    plan: starter                # workers require a paid plan (~$7/mo)
+    region: frankfurt            # MUST be non-US — Binance blocks US IPs (HTTP 451)
+    buildCommand: pip install -r requirements.txt
+    startCommand: python runner.py
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: NVIDIA_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false

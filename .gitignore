@@ -1,0 +1,9 @@
+*.csv
+*.db
+*.db-wal
+*.db-shm
+tracker.db*
+__pycache__/
+*.pyc
+.env
+reports/
