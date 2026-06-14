@@ -163,7 +163,8 @@ if __name__ == "__main__":
         cycle(probe=True); sys.exit()
     if "--once" in sys.argv:
         cycle(); resolve(); sys.exit()
-    print(f"runner live | meanrev(Polymarket) + gaptrav(forex paper) -> {db.DB_PATH}")
+    target = "Postgres/Neon" if db.IS_PG else db.DB_PATH
+    print(f"runner live | meanrev(Polymarket) + gaptrav(forex paper) -> {target}")
     while True:
         now = time.time()
         nxt = (int(now) // WIN + 1) * WIN
