@@ -152,30 +152,43 @@ def record_trade(signal_id, symbol, side, entry, stop, target, ts=None):
 
 
 def record_signals_trades(items):
-    """Bulk insert (signal + trade) pairs over ONE connection — orders of
-    magnitude faster than per-row record_signal/record_trade against Neon.
-    items: dicts with strategy,symbol,timeframe,direction,rule,detail,side,
-    entry,stop,target,ts. Returns count inserted."""
+    """Bulk insert (signal + trade) pairs. On Postgres uses execute_values so the
+    whole batch is ~2 round-trips (essential cross-region against Neon); on SQLite
+    a simple loop. items: dicts with strategy,symbol,timeframe,direction,rule,
+    detail,side,entry,stop,target,ts. Returns count inserted."""
     if not items:
         return 0
-    c = conn(); cur = c.cursor(); n = 0
-    sig_sql = (f"INSERT INTO signals(ts,strategy,symbol,timeframe,direction,"
-               f"rule,mode,detail) VALUES({','.join([PH]*8)}){RETURN_ID}")
-    tr_sql = (f"INSERT INTO trades(signal_id,ts,symbol,side,entry,stop,target,"
-              f"exit,outcome,won,ret_bps,bars_held) VALUES({','.join([PH]*12)})")
-    for it in items:
-        ts = it.get("ts") or int(time.time())
-        cur.execute(sig_sql, (ts, it["strategy"], it["symbol"],
-                              it.get("timeframe", "5m"), it["direction"],
-                              it.get("rule", ""), it.get("mode", "paper"),
-                              json.dumps(it.get("detail") or {})))
-        sid = cur.fetchone()["id"] if IS_PG else cur.lastrowid
-        cur.execute(tr_sql, (sid, ts, it["symbol"], it["side"], it["entry"],
-                             it.get("stop"), it.get("target"), None, "",
-                             None, None, None))
-        n += 1
+    now = int(time.time())
+    sig_rows = [(it.get("ts") or now, it["strategy"], it["symbol"],
+                 it.get("timeframe", "5m"), it["direction"], it.get("rule", ""),
+                 it.get("mode", "paper"), json.dumps(it.get("detail") or {}))
+                for it in items]
+    c = conn(); cur = c.cursor()
+    if IS_PG:
+        ids = psycopg2.extras.execute_values(
+            cur, "INSERT INTO signals(ts,strategy,symbol,timeframe,direction,"
+                 "rule,mode,detail) VALUES %s RETURNING id", sig_rows, fetch=True)
+        sids = [r["id"] if isinstance(r, dict) else r[0] for r in ids]
+        tr_rows = [(sids[i], sig_rows[i][0], it["symbol"], it["side"],
+                    it["entry"], it.get("stop"), it.get("target"), None, "",
+                    None, None, None) for i, it in enumerate(items)]
+        psycopg2.extras.execute_values(
+            cur, "INSERT INTO trades(signal_id,ts,symbol,side,entry,stop,target,"
+                 "exit,outcome,won,ret_bps,bars_held) VALUES %s", tr_rows)
+    else:
+        for i, it in enumerate(items):
+            cur.execute(f"INSERT INTO signals(ts,strategy,symbol,timeframe,"
+                        f"direction,rule,mode,detail) VALUES({','.join([PH]*8)})",
+                        sig_rows[i])
+            sid = cur.lastrowid
+            cur.execute(f"INSERT INTO trades(signal_id,ts,symbol,side,entry,stop,"
+                        f"target,exit,outcome,won,ret_bps,bars_held) "
+                        f"VALUES({','.join([PH]*12)})",
+                        (sid, sig_rows[i][0], it["symbol"], it["side"],
+                         it["entry"], it.get("stop"), it.get("target"), None,
+                         "", None, None, None))
     c.commit(); cur.close(); c.close()
-    return n
+    return len(items)
 
 
 def resolve_trades_batch(updates):
