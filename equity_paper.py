@@ -203,7 +203,7 @@ def resolve_open():
     rows = db._rows(
         "SELECT t.*, s.strategy, s.timeframe FROM trades t "
         "JOIN signals s ON t.signal_id=s.id "
-        "WHERE t.outcome='' AND s.strategy LIKE '%_eq%'")
+        f"WHERE t.outcome='' AND s.strategy LIKE {db.PH}", ("%_eq_%",))
     n = 0
     cache = {}
     for t in rows:
