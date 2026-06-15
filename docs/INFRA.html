@@ -104,8 +104,12 @@ hard caps + kill switch bound exposure. Everything else is open to explore.</div
 <tr><td><code>strategies.py</code></td><td>The original validated signal functions (single source for the migrated 8).</td><td><span class="tag b">built</span></td></tr>
 <tr><td><code>runner.py</code></td><td>Live 5m loop: signal → DB → resolve. Iterates the registry (generic loop → P2).</td><td><span class="tag p">partial</span></td></tr>
 <tr><td><code>dashboard_db.py</code></td><td>Public results dashboard + admin (auth) + this doc. Redaction whitelist.</td><td><span class="tag b">built</span></td></tr>
-<tr><td><code>adapters/data/*</code>, <code>adapters/exec/*</code></td><td>Per-domain data + paper/live execution (binance/polymarket/kalshi/deribit/openmeteo/alpaca).</td><td><span class="tag x">P2</span></td></tr>
-<tr><td><code>AGENT.md</code> + routine</td><td>The every-8h Claude Code protocol (research → validate → tweak/retire).</td><td><span class="tag x">P4</span></td></tr>
+<tr><td><code>adapters/kalshi_client.py</code></td><td>Authenticated Kalshi REST client (RSA-PSS request signing). Hits the real API.</td><td><span class="tag b">built</span></td></tr>
+<tr><td><code>adapters/data/kalshi.py</code></td><td>Kalshi crypto market data: threshold markets, strikes, implied prob, candlesticks.</td><td><span class="tag b">built</span></td></tr>
+<tr><td><code>kalshi_paper.py</code></td><td>Kalshi crypto vol-model: predict P(settle&gt;K) from live spot+vol, settle from Kalshi result. Paper; gated live-order path.</td><td><span class="tag b">built</span></td></tr>
+<tr><td><code>daily.py</code></td><td>Scheduled heartbeat: resolve + collect Kalshi every ~8h (deterministic, no-LLM core).</td><td><span class="tag b">built</span></td></tr>
+<tr><td><code>AGENT.md</code></td><td>The every-8h Claude Code research protocol (incl. the INFRA.html upkeep duty).</td><td><span class="tag b">built</span> (routine: pending)</td></tr>
+<tr><td>other <code>adapters/*</code></td><td>deribit / openmeteo / alpaca data + exec.</td><td><span class="tag x">P2 later</span></td></tr>
 <tr><td>live rails (executor/forex_oanda/alpaca)</td><td>Auto-promotion gate + budget arming + kill switch + 20-stock cap.</td><td><span class="tag x">P5</span></td></tr>
 <tr><td><code>test_redaction.py</code></td><td>Asserts the public payload never leaks strategy internals.</td><td><span class="tag b">built</span></td></tr>
 </table>
@@ -193,7 +197,7 @@ the daily run is Claude Code, not the API.</p>
 <table>
 <tr><th>Domain</th><th>Data</th><th>Exec / paper</th><th>Status</th></tr>
 <tr><td>Crypto spot/perp</td><td>Binance Vision (keyless)</td><td>spot_bps / bracket_sltp / polymarket_binary</td><td><span class="tag b">built</span></td></tr>
-<tr><td>Prediction markets</td><td>Polymarket (have) · Kalshi (free key)</td><td>polymarket_binary · kalshi_binary</td><td><span class="tag p">polymarket built; kalshi P2</span></td></tr>
+<tr><td>Prediction markets</td><td>Polymarket (have) · <b>Kalshi (live, RSA key wired)</b></td><td>polymarket_binary · <b>kalshi vol-model (paper)</b></td><td><span class="tag b">built</span> (paper, real API)</td></tr>
 <tr><td>Crypto options</td><td>Deribit (keyless public)</td><td>options_mid</td><td><span class="tag x">P2</span></td></tr>
 <tr><td>Weather</td><td>Open-Meteo (keyless) → Kalshi</td><td>kalshi_binary</td><td><span class="tag x">P2</span></td></tr>
 <tr><td>Equities</td><td>Alpaca (free key)</td><td>alpaca_equity (paper↔live flag) · ≤20 live positions</td><td><span class="tag x">P2 — needs keys</span></td></tr>
@@ -208,14 +212,15 @@ budget</b> for any real money (P5). Deribit + Open-Meteo are keyless.</div>
 <tr><td>P0</td><td>Manifests + ledger tables + lab.py CLI + migrate 8 strategies</td><td><span class="tag b">done</span></td></tr>
 <tr><td>P1</td><td>Leak-safe harness; reproduces known numbers</td><td><span class="tag b">done</span></td></tr>
 <tr><td>P3</td><td>Dashboard public/admin split + redaction test</td><td><span class="tag b">done</span></td></tr>
-<tr><td>P2</td><td>Data + exec adapters + generic runner loop + bracket resolution</td><td><span class="tag x">next</span></td></tr>
-<tr><td>P4</td><td>AGENT.md + research ingestion + every-8h routine</td><td><span class="tag x">pending</span></td></tr>
-<tr><td>P5</td><td>Live rails: gate + budget arming + kill switch + 20-stock cap</td><td><span class="tag x">pending</span></td></tr>
+<tr><td>P2</td><td>Adapters — <b>Kalshi crypto live+paper done</b>; deribit/openmeteo/alpaca + generic runner + bracket resolution later</td><td><span class="tag p">kalshi done</span></td></tr>
+<tr><td>P4</td><td>AGENT.md + daily.py heartbeat <b>built</b>; the scheduled cloud routine + Firecrawl/Tavily ingestion pending</td><td><span class="tag p">partial</span></td></tr>
+<tr><td>P5</td><td>Live rails: gate + budget arming + kill switch + 20-stock cap (paper-only for now by choice)</td><td><span class="tag x">pending</span></td></tr>
 </table>
 
 <h2>12 · Changelog</h2>
 <ul>
 <li><span class=meta>2026-06-15</span> — P0/P1/P3 built &amp; verified. Added rlab package, 8 manifests, ledger tables, lab.py, leak-safe harness, dashboard public/admin split + redaction test, this document.</li>
+<li><span class=meta>2026-06-15</span> — Kalshi wired end-to-end against the real API (RSA auth verified). Added adapters/kalshi_client.py + adapters/data/kalshi.py, kalshi_paper.py (live-spot vol model → P(settle&gt;K), settled from Kalshi ground-truth result), strategy <code>kalshi_crypto_model</code> (research/data-collection, paper), daily.py heartbeat, AGENT.md. Recorded + resolved real predictions in test. Secrets in gitignored .env/secrets/. Paper-only (no live money).</li>
 </ul>
 
 </div>

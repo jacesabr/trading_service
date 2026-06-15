@@ -6,4 +6,8 @@ tracker.db*
 __pycache__/
 *.pyc
 .env
+.env.*
+secrets/
+*.pem
+*.key
 reports/
