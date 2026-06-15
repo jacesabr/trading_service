@@ -1,0 +1,51 @@
+{
+  "name": "wick_fade_eq_5m",
+  "order": 20,
+  "label": "wick_fade \u00b7 5m \u00b7 equities",
+  "domain": "equity",
+  "kind": "binary",
+  "venue": "alpaca",
+  "status": "research \u00b7 data-collection",
+  "lifecycle": "research",
+  "role": "data-collection",
+  "symbols": "SPY,QQQ,AAPL,MSFT,NVDA,TSLA,AMZN,META",
+  "data": {
+    "adapter": "alpaca",
+    "symbols": [
+      "SPY",
+      "QQQ",
+      "AAPL",
+      "MSFT",
+      "NVDA",
+      "TSLA",
+      "AMZN",
+      "META"
+    ],
+    "timeframe": "5m",
+    "ltf": "1m"
+  },
+  "signal": {
+    "module": "equity_paper",
+    "fn": "collect",
+    "live_collected": true,
+    "params": {},
+    "param_grid": {}
+  },
+  "exec_model": "spot_bps",
+  "gate": {
+    "min_resolved": 400,
+    "live_within_pp": 2.0,
+    "ev_z": 2.0
+  },
+  "method": "The wick_fade signal run on liquid US equities at 5m on real Alpaca bars, across 8 symbols. Tests whether the zone/reversion logic transfers from crypto to equities and which timeframe carries it.",
+  "risk": "Paper, resolved from real Alpaca bars. Research/data-collection \u2014 no edge claimed; gathering multi-symbol/timeframe numbers.",
+  "provenance": {
+    "created_by": "agent",
+    "date": "2026-06-15",
+    "hypothesis": "wick_fade has a tradable edge on equities at 5m.",
+    "research_refs": [
+      "equity_paper.py",
+      "strategies.py"
+    ]
+  }
+}

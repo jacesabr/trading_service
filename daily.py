@@ -31,11 +31,24 @@ def main():
     except Exception as e:
         out["kalshi"] = {"error": str(e)[:200]}
 
+    # --- Equities on Alpaca (real bars, paper) ---
+    try:
+        import equity_paper as eq
+        eq.ensure_manifests()
+        eres = eq.resolve_open()
+        erec = eq.collect()
+        out["equity"] = {"resolved": eres, "recorded": erec}
+    except Exception as e:
+        out["equity"] = {"error": str(e)[:200]}
+
     # --- summary line ---
-    k = out.get("kalshi", {})
+    k = out.get("kalshi", {}); e = out.get("equity", {})
     print(f"[daily {started}] kalshi: resolved={k.get('resolved','?')} "
           f"recorded={k.get('recorded','?')}"
-          + (f" ERR={k['error']}" if "error" in k else ""))
+          + (f" ERR={k['error']}" if "error" in k else "")
+          + f" | equity: resolved={e.get('resolved','?')} "
+          f"recorded={e.get('recorded','?')}"
+          + (f" ERR={e['error']}" if "error" in e else ""))
     return out
 
 
