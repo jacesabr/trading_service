@@ -178,8 +178,9 @@ def activity():
 
 
 def recent_trades(limit=400):
-    """Resolved trades joined with strategy, newest first (for per-trade logs)."""
-    return _rows("SELECT t.*, s.strategy FROM trades t JOIN signals s "
+    """Resolved trades joined with strategy + signal detail (carries the live
+    spread_bps), newest first (for per-trade logs and real-cost netting)."""
+    return _rows("SELECT t.*, s.strategy, s.detail FROM trades t JOIN signals s "
                  "ON t.signal_id=s.id WHERE t.outcome!='' "
                  f"ORDER BY t.ts DESC LIMIT {int(limit)}")
 

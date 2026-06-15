@@ -13,6 +13,7 @@ meanrev reads the Polymarket `bets` table; every other strategy reads `trades`
 
 Run: python dashboard_db.py  ->  http://localhost:8050
 """
+import json
 import os
 import time
 
@@ -23,12 +24,26 @@ import db
 import strategies as S
 
 SIZE_USD = float(os.environ.get("SIZE_USD", "100"))
-# Assumed round-trip spread+fee for spot paper strategies, in bps. The research
-# verdict is that gap-traversal "fails even a 1 bps spread" — so NET (gross minus
-# this) is the honest number; gross hit-rate/bps flatter dead strategies.
-COST_BPS = float(os.environ.get("COST_BPS", "5"))
+# Real cost model for spot paper strategies = measured spread (per trade, from
+# Binance book at signal time) + a transparent round-trip fee. FEE_BPS is the
+# ONLY assumption and it's tunable: default 4 bps round-trip ≈ 2 bps/side, a
+# low-fee-venue / maker-ish taker for liquid crypto. Set FEE_BPS=0 for a pure
+# maker-rebate view. Net = gross − avg_measured_spread − FEE_BPS.
+FEE_BPS = float(os.environ.get("FEE_BPS", "4"))
 app = Flask(__name__)
 db.init()
+
+
+def _spread_of(row):
+    d = row.get("detail")
+    if isinstance(d, str):
+        try:
+            d = json.loads(d)
+        except Exception:
+            d = {}
+    if isinstance(d, dict) and isinstance(d.get("spread_bps"), (int, float)):
+        return float(d["spread_bps"])
+    return None
 
 
 def _age_min(ts, now):
@@ -86,10 +101,15 @@ def stats():
                 won = np.array([t["won"] for t in res], float)
                 ret = np.array([t["ret_bps"] for t in res_sorted], float)
                 gross = float(ret.mean())
+                spreads = [s for s in (_spread_of(t) for t in res) if s is not None]
+                avg_spread = round(float(np.mean(spreads)), 2) if spreads else None
+                cost = (avg_spread or 0.0) + FEE_BPS
                 card.update(
                     n=len(res), hit=round(float(won.mean()), 4),
                     exp_bps=round(gross, 1),
-                    net_bps=round(gross - COST_BPS, 1), cost_bps=COST_BPS,
+                    net_bps=round(gross - cost, 1),
+                    spread_bps=avg_spread, fee_bps=FEE_BPS,
+                    spread_n=len(spreads),
                     equity=np.round(np.cumsum(ret), 1).tolist(), unit="bps",
                     recent=[dict(t=t["ts"], symbol=t["symbol"], side=t["side"],
                                  entry=t["entry"], exit=t["exit"],
@@ -185,12 +205,17 @@ function kpis(c){
    <div class=kpi><small>Gross bps</small>${c.exp_bps>0?'+':''}${c.exp_bps}</div>
    <div class="kpi ${c.net_bps>0?'pos':'neg'}"><small>Net bps</small>${c.net_bps>0?'+':''}${c.net_bps}</div></div>`;
 }
+function costnote(c){
+ const sp = c.spread_bps==null ? 'measuring…'
+   : (c.spread_bps+' bps live ('+c.spread_n+' trades)');
+ return `<div class=status style="color:var(--dim)">net = gross − spread ${sp} − fee ${c.fee_bps} bps</div>`;
+}
 function baseline(c){
  if(c.rw_base==null) return '';
  const real = c.edge_pp>0;
  return `<div class=status>hit ${pct(c.hit)} vs random-walk ${pct(c.rw_base)}
    · <span class="${real?'pos':'neg'}">edge ${c.edge_pp>0?'+':''}${c.edge_pp}pp</span>
-   <span style="color:var(--dim)">(mostly wick-touch artifact)</span></div>`;
+   <span style="color:var(--dim)">(target=intrabar touch, stop=close)</span></div>`;
 }
 async function tick(){
  const s=await(await fetch('/api/stats')).json();
@@ -207,7 +232,7 @@ async function tick(){
      ${c.last_age_min!=null?('last signal '+f(c.last_age_min,0)+'m ago'):'no signals yet'}
      · ${c.pending} pending${armed?' · armed':''} · ${c.symbols}</div>
    <div class=method>${c.method}</div>
-   ${c.n?kpis(c)+baseline(c)+(c.unit==='bps'?'<div class=status style="color:var(--dim)">net = gross − '+c.cost_bps+' bps assumed round-trip cost</div>':'')+'<canvas id="cv_'+name+'"></canvas>'+rowsTable(c):'<div class=empty>No resolved trades yet.</div>'}
+   ${c.n?kpis(c)+baseline(c)+(c.unit==='bps'?costnote(c):'')+'<canvas id="cv_'+name+'"></canvas>'+rowsTable(c):'<div class=empty>No resolved trades yet.</div>'}
    <div class=risk>${c.risk}</div>`;
   if(c.n&&c.equity){
    const ctx=document.getElementById('cv_'+name);

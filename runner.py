@@ -86,6 +86,22 @@ def _klines_from(symbol, start_ms, limit):
     raise RuntimeError(f"klines_from failed: {last_err}")
 
 
+def _book_spread_bps(symbol):
+    """Live best bid/ask spread in bps from Binance — the REAL per-symbol spread
+    cost at signal time (liquid majors are sub-bp; stored per trade so the
+    dashboard nets against measured spread, not a guessed flat number)."""
+    for host in _BINANCE_HOSTS:
+        try:
+            raw = json.loads(urllib.request.urlopen(
+                f"{host}/api/v3/ticker/bookTicker?symbol={symbol}", timeout=10).read())
+            bid = float(raw["bidPrice"]); ask = float(raw["askPrice"])
+            if bid > 0 and ask > 0:
+                return round((ask - bid) / ((ask + bid) / 2) * 1e4, 3)
+        except Exception:
+            continue
+    return None
+
+
 def _one_candle(symbol, start_ms):
     """Return (open, high, low, close) for the 5m candle at start_ms."""
     for host in _BINANCE_HOSTS:
@@ -155,15 +171,18 @@ def cycle(probe=False):
         if len(df5) < 200:
             continue
         entry = float(df5["close"].iloc[-1])
+        spr = None if probe else _book_spread_bps(symbol)   # real spread, per trade
+        det = {"spread_bps": spr}
         if probe:
-            print(f"[{coin}] {symbol} bars={len(df5)} close={entry}")
+            print(f"[{coin}] {symbol} bars={len(df5)} close={entry} "
+                  f"spread={_book_spread_bps(symbol)}bps")
 
         # ---- binary: meanrev (spot for all; Polymarket bet for BTC/ETH) ----
         side, rule = S.meanrev_signal(df5)
         if side:
             dirn = 1 if side == "Up" else -1
             if not probe:
-                _record_binary("meanrev_spot", symbol, dirn, rule, boundary, entry)
+                _record_binary("meanrev_spot", symbol, dirn, rule, boundary, entry, det)
             if coin in POLY:
                 _maybe_bet(coin, symbol, side, rule, boundary, probe)
             if probe:
@@ -172,14 +191,14 @@ def cycle(probe=False):
         # ---- binary: wick_fade ----
         d, r = S.wick_fade_signal(df5)
         if d and not probe:
-            _record_binary("wick_fade", symbol, d, r, boundary, entry)
+            _record_binary("wick_fade", symbol, d, r, boundary, entry, det)
         if probe and d:
             print(f"  wick_fade={'Up' if d>0 else 'Down'} ({r})")
 
         # ---- binary: zone_break_bias ----
         d, r = S.zone_break_bias_signal(df5, df1)
         if d and not probe:
-            _record_binary("zone_break_bias", symbol, d, r, boundary, entry)
+            _record_binary("zone_break_bias", symbol, d, r, boundary, entry, det)
         if probe and d:
             print(f"  zone_break_bias={'Up' if d>0 else 'Down'} ({r})")
 
@@ -206,7 +225,8 @@ def cycle(probe=False):
                     print(f"  {strat}={'long' if tr['direction']>0 else 'short'} "
                           f"tgt={tr['target']:.4g} stop={tr['stop']:.4g}")
                 else:
-                    _record_bracket(strat, symbol, tr, detail={"gap": tr.get("gap")})
+                    _record_bracket(strat, symbol, tr,
+                                    detail={"gap": tr.get("gap"), "spread_bps": spr})
         elif probe:
             print("  (no zone bands)")
 
