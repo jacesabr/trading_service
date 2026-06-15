@@ -254,6 +254,12 @@ def cmd_promote(args):
                      "human must arm it (LIVE_BUDGET_ARMED=1 + caps) — P5.")
 
     registry.set_lifecycle(args.name, nxt, reason=args.reason, by_who=args.by)
+    # keep the human-facing status string honest with the new lifecycle, but only
+    # overwrite boilerplate "research…" text so curated labels (DEAD/control) stay.
+    m2 = registry.load_manifest(args.name)
+    if cur == "research" and (m2.get("status") or "").lower().startswith("research"):
+        m2["status"] = "paper (agent-authored, validated)"
+        registry.save_manifest(m2)
     print(f"{args.name}: {cur} -> {nxt}")
 
 

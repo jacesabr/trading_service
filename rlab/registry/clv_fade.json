@@ -5,7 +5,7 @@
   "domain": "crypto",
   "kind": "binary",
   "venue": "spot",
-  "status": "research (agent-authored)",
+  "status": "paper (agent-authored, validated)",
   "lifecycle": "paper",
   "symbols": "BTCUSDT,ETHUSDT",
   "data": {
