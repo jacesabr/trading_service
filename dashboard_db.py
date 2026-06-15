@@ -23,6 +23,10 @@ import db
 import strategies as S
 
 SIZE_USD = float(os.environ.get("SIZE_USD", "100"))
+# Assumed round-trip spread+fee for spot paper strategies, in bps. The research
+# verdict is that gap-traversal "fails even a 1 bps spread" — so NET (gross minus
+# this) is the honest number; gross hit-rate/bps flatter dead strategies.
+COST_BPS = float(os.environ.get("COST_BPS", "5"))
 app = Flask(__name__)
 db.init()
 
@@ -81,15 +85,32 @@ def stats():
                 res_sorted = sorted(res, key=lambda t: t["ts"])
                 won = np.array([t["won"] for t in res], float)
                 ret = np.array([t["ret_bps"] for t in res_sorted], float)
+                gross = float(ret.mean())
                 card.update(
                     n=len(res), hit=round(float(won.mean()), 4),
-                    exp_bps=round(float(ret.mean()), 1),
+                    exp_bps=round(gross, 1),
+                    net_bps=round(gross - COST_BPS, 1), cost_bps=COST_BPS,
                     equity=np.round(np.cumsum(ret), 1).tolist(), unit="bps",
                     recent=[dict(t=t["ts"], symbol=t["symbol"], side=t["side"],
                                  entry=t["entry"], exit=t["exit"],
                                  outcome=t["outcome"], ret_bps=t["ret_bps"])
                             for t in sorted(res, key=lambda t: t["ts"],
                                             reverse=True)[:25]])
+                # bracket only: edge vs random-walk first-passage baseline.
+                # rw_base = P(touch target before stop) under a driftless walk =
+                # stop_dist / (stop_dist + target_dist). win >> rw_base here is
+                # mostly the intrabar-touch-vs-close asymmetry, not real edge.
+                br = [t for t in res if t["target"] is not None
+                      and t["stop"] is not None and t["entry"]]
+                rw = [abs(t["entry"] - t["stop"]) /
+                      (abs(t["entry"] - t["stop"]) + abs(t["target"] - t["entry"]))
+                      for t in br
+                      if abs(t["entry"] - t["stop"]) + abs(t["target"] - t["entry"]) > 0]
+                if rw:
+                    win_br = float(np.mean([t["won"] for t in br]))
+                    rwm = float(np.mean(rw))
+                    card.update(rw_base=round(rwm, 3),
+                                edge_pp=round((win_br - rwm) * 100, 1))
         out["strategies"][name] = card
     return jsonify(out)
 
@@ -161,7 +182,15 @@ function kpis(c){
  return `<div class=kpis>
    <div class=kpi><small>Resolved</small>${c.n}</div>
    <div class=kpi><small>Hit/touch</small>${pct(c.hit)}</div>
-   <div class="kpi ${c.exp_bps>0?'pos':'neg'}"><small>Exp bps</small>${c.exp_bps>0?'+':''}${c.exp_bps}</div></div>`;
+   <div class=kpi><small>Gross bps</small>${c.exp_bps>0?'+':''}${c.exp_bps}</div>
+   <div class="kpi ${c.net_bps>0?'pos':'neg'}"><small>Net bps</small>${c.net_bps>0?'+':''}${c.net_bps}</div></div>`;
+}
+function baseline(c){
+ if(c.rw_base==null) return '';
+ const real = c.edge_pp>0;
+ return `<div class=status>hit ${pct(c.hit)} vs random-walk ${pct(c.rw_base)}
+   · <span class="${real?'pos':'neg'}">edge ${c.edge_pp>0?'+':''}${c.edge_pp}pp</span>
+   <span style="color:var(--dim)">(mostly wick-touch artifact)</span></div>`;
 }
 async function tick(){
  const s=await(await fetch('/api/stats')).json();
@@ -178,7 +207,7 @@ async function tick(){
      ${c.last_age_min!=null?('last signal '+f(c.last_age_min,0)+'m ago'):'no signals yet'}
      · ${c.pending} pending${armed?' · armed':''} · ${c.symbols}</div>
    <div class=method>${c.method}</div>
-   ${c.n?kpis(c)+'<canvas id="cv_'+name+'"></canvas>'+rowsTable(c):'<div class=empty>No resolved trades yet.</div>'}
+   ${c.n?kpis(c)+baseline(c)+(c.unit==='bps'?'<div class=status style="color:var(--dim)">net = gross − '+c.cost_bps+' bps assumed round-trip cost</div>':'')+'<canvas id="cv_'+name+'"></canvas>'+rowsTable(c):'<div class=empty>No resolved trades yet.</div>'}
    <div class=risk>${c.risk}</div>`;
   if(c.n&&c.equity){
    const ctx=document.getElementById('cv_'+name);

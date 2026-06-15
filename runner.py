@@ -64,6 +64,28 @@ def _klines(symbol, interval, limit):
     raise RuntimeError(f"all Binance hosts failed (geo-block?): {last_err}")
 
 
+def _klines_from(symbol, start_ms, limit):
+    """5m candles starting at start_ms — used to resolve a bracket trade against
+    ITS OWN holding window (fetching the last N bars mis-resolves old trades
+    whose post-entry bars have scrolled out of view)."""
+    last_err = None
+    for host in _BINANCE_HOSTS:
+        try:
+            raw = json.loads(urllib.request.urlopen(
+                f"{host}/api/v3/klines?symbol={symbol}&interval=5m"
+                f"&startTime={start_ms}&limit={limit}", timeout=15).read())
+            df = pd.DataFrame([r[:6] for r in raw],
+                              columns=["ts", "open", "high", "low", "close", "volume"])
+            for k in df.columns[1:]:
+                df[k] = df[k].astype(float)
+            df["ts"] = df["ts"].astype("int64")
+            return df
+        except Exception as e:
+            last_err = e
+            continue
+    raise RuntimeError(f"klines_from failed: {last_err}")
+
+
 def _one_candle(symbol, start_ms):
     """Return (open, high, low, close) for the 5m candle at start_ms."""
     for host in _BINANCE_HOSTS:
@@ -228,30 +250,32 @@ def resolve():
                   f"{'up' if up else 'down'} {ret:+.0f}bps")
             continue
 
-        # bracket SL/TP traversal
+        # bracket SL/TP traversal — resolve against THIS trade's own window
         try:
-            df = _klines(t["symbol"], "5m", 60)
+            raw = _klines_from(t["symbol"], int(t["ts"]) * 1000, BRACKET_MAXBARS + 5)
         except Exception:
             continue
-        seg = df[df.ts > t["ts"] * 1000]
+        seg = raw[raw.ts > t["ts"] * 1000].head(BRACKET_MAXBARS).reset_index(drop=True)
         if len(seg) < 1:
             continue
         d = 1 if t["side"] == "long" else -1
-        outcome = exit_p = None
-        for i, (_, row) in enumerate(seg.iterrows()):
-            if i >= BRACKET_MAXBARS:
-                break
+        outcome = exit_p = None; held = len(seg)
+        for i, row in seg.iterrows():
             stop_hit = (row.close <= t["stop"]) if d > 0 else (row.close >= t["stop"])
             tgt_hit = (row.high >= t["target"]) if d > 0 else (row.low <= t["target"])
             if stop_hit:
-                outcome, exit_p = "stop", t["stop"]; break
+                outcome, exit_p, held = "stop", t["stop"], i + 1; break
             if tgt_hit:
-                outcome, exit_p = "target", t["target"]; break
-        if outcome:
-            ret = d * (exit_p - t["entry"]) / t["entry"] * 1e4
-            db.resolve_trade(t["id"], exit_p, outcome, int(outcome == "target"),
-                             round(ret, 1), min(len(seg), BRACKET_MAXBARS))
-            print(f"  resolved TRADE {t['symbol']} {t['side']} -> {outcome} {ret:+.0f}bps")
+                outcome, exit_p, held = "target", t["target"], i + 1; break
+        if outcome is None:
+            # neither border hit; only time out once the FULL window has elapsed
+            if now_ms < (int(t["ts"]) + BRACKET_MAXBARS * WIN) * 1000:
+                continue
+            outcome, exit_p = "timeout", float(seg["close"].iloc[-1])
+        ret = d * (exit_p - t["entry"]) / t["entry"] * 1e4
+        db.resolve_trade(t["id"], round(exit_p, 6), outcome,
+                         int(outcome == "target"), round(ret, 1), held)
+        print(f"  resolved TRADE {t['symbol']} {t['side']} -> {outcome} {ret:+.0f}bps")
 
 
 if __name__ == "__main__":
