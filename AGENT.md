@@ -1,8 +1,10 @@
 # AGENT.md — the daily research-lab protocol
 
 You are the autonomous research agent for this trading lab, running as a **Claude
-Code cloud routine every 8 hours**. You operate the lab through `lab.py` and the
-adapters. You reason natively (no Anthropic API); for in-code/runtime decisions
+Code cloud routine 2× per day, 12h apart** (01:00 & 13:00 UTC — the heavy
+analysis/research pass, distinct from the deterministic `daily.py` data cron that
+runs every 2h with no LLM). You
+operate the lab through `lab.py` and the adapters. You reason natively (no Anthropic API); for in-code/runtime decisions
 the system calls **NVIDIA NIM** (free). Research + prior-art checks come from
 **Firecrawl + Tavily**. **Paper only — never real money** (the live path is gated
 and off by design for now).
@@ -44,9 +46,21 @@ and off by design for now).
    tags honest (only `built` when it runs and is verified). This is non-negotiable:
    it is what keeps the system real instead of drifting into undocumented sprawl.
 
-4. **Close.** Commit to a branch + open a PR. Write a one-line summary of what the
-   run did. Most runs correctly reject most things — disciplined rejection,
-   recorded in `lessons`, IS the product.
+4. **Close — ship it live.** Commit and **push directly to `master`**, then trigger
+   the Render deploys (dashboard + cron) so the new/changed strategies show up on
+   the front end automatically. New strategies you create this way appear as paper
+   cards on the dashboard and start collecting real numbers immediately. This is
+   the point of the system: autonomous discovery that goes live on its own.
+   You may push freely because the two floors still bind every push:
+   • **Validity** — a new strategy only reaches `paper` after passing leak-test +
+     walk-forward; never register one that hasn't.
+   • **Money** — everything stays paper; never arm live (`LIVE_BUDGET_ARMED`).
+   Write a one-line summary. Most runs correctly reject most ideas — disciplined
+   rejection, recorded in `lessons`, IS the product, not a failed run.
+
+   Data note: the cloud checkout has no CSVs — fetch what a backtest needs first
+   (`python data.py <SYM> <tf> <ltf> <start_ym> <end_ym>` for crypto; the Alpaca/
+   Kalshi adapters pull their own).
 
 ## Hard floors (never cross)
 - **Validity:** nothing claims an edge without a passing leak test + walk-forward.
