@@ -19,6 +19,7 @@ Usage:
   python runner.py --probe    # one-shot connectivity + signal check
   python runner.py --once     # single cycle (cron-style)
 """
+import importlib
 import json
 import sys
 import time
@@ -31,8 +32,40 @@ import db
 import strategies as S
 import venues
 import paper_trader as pt   # klines(), find_market(), best_book(), taker_fill(), fee_fraction(), candle_outcome()
+from rlab import registry as _reg
 
 _VENUES = venues.active_venues()   # real paper venues whose keys are present
+
+
+def _rlab_binary_specs():
+    """Agent-authored binary crypto strategies (signal in rlab.impl.*) at paper+
+    lifecycle that the runner forward-collects each cycle. Loaded from the
+    registry so a newly-promoted strategy auto-collects on the next deploy with
+    NO runner edit — the whole point of the manifest system. Restricted to each
+    manifest's own validated symbols so the track record stays clean.
+    Returns [(name, fn, params, {binance_symbols})]."""
+    out = []
+    for name, m in _reg.manifests().items():
+        if m.get("domain") != "crypto" or m.get("kind") != "binary":
+            continue
+        if m.get("lifecycle") not in ("paper", "live_candidate", "live"):
+            continue
+        sig = m.get("signal", {})
+        mod = sig.get("module", "")
+        if not mod.startswith("rlab.impl."):
+            continue
+        try:
+            fn = getattr(importlib.import_module(mod), sig.get("fn", "signal"))
+        except Exception as e:
+            print(f"  [rlab] {name} load failed: {e}")
+            continue
+        syms = set(m.get("data", {}).get("symbols", []) or [])
+        out.append((name, fn, dict(sig.get("params", {})), syms))
+        print(f"  [rlab] forward-collecting {name} on {sorted(syms)}")
+    return out
+
+
+_RLAB_BINARY = _rlab_binary_specs()   # resolved once at startup (re-resolves on deploy)
 
 # Polymarket has 5m Up/Down markets only for BTC/ETH -> those get real bets.
 POLY = {"btc": "BTCUSDT", "eth": "ETHUSDT"}
@@ -228,6 +261,23 @@ def cycle(probe=False):
             _record_binary("zone_break_bias", symbol, d, r, boundary, entry, det)
         if probe and d:
             print(f"  zone_break_bias={'Up' if d>0 else 'Down'} ({r})")
+
+        # ---- binary: agent-authored rlab strategies (registry-driven) ----
+        for name, fn, params, syms in _RLAB_BINARY:
+            if syms and symbol not in syms:
+                continue
+            try:
+                out = fn(df5, params)
+            except TypeError:
+                out = fn(df5)
+            side = out[0] if isinstance(out, tuple) else out
+            rule = out[1] if isinstance(out, tuple) and len(out) > 1 else name
+            if side in ("Up", "Down"):
+                if not probe:
+                    _record_binary(name, symbol, 1 if side == "Up" else -1,
+                                   rule, boundary, entry, det)
+                else:
+                    print(f"  {name}={side} ({rule})")
 
         # ---- bracket family: gap zones (shared) ----
         bands = S.current_zone_bands(df5.tail(200).reset_index(drop=True),

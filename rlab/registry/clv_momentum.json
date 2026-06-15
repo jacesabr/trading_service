@@ -1,0 +1,51 @@
+{
+  "name": "clv_momentum",
+  "order": 21,
+  "label": "CLV order-flow continuation \u00b7 5m",
+  "domain": "crypto",
+  "kind": "binary",
+  "venue": "spot",
+  "status": "retired: Continuation direction robustly negative (z=-9.2, 0/5 windows). Kept as the documented rejection; the inverse clv_fade carries the edge.",
+  "lifecycle": "retired",
+  "symbols": "BTCUSDT,ETHUSDT",
+  "data": {
+    "adapter": "binance",
+    "symbols": [
+      "BTCUSDT",
+      "ETHUSDT"
+    ],
+    "timeframe": "5m"
+  },
+  "signal": {
+    "module": "rlab.impl.clv_momentum",
+    "fn": "signal",
+    "params": {},
+    "param_grid": {}
+  },
+  "exec_model": "spot_bps",
+  "gate": {
+    "min_resolved": 400,
+    "live_within_pp": 2.0,
+    "ev_z": 2.0
+  },
+  "method": "A 5m bar that closes in the extreme of its range on above-median volume reflects intrabar order-flow imbalance that persists one bar; predict next-bar direction in the same direction.",
+  "risk": "Paper only until leak test + walk-forward pass. Agent-authored.",
+  "provenance": {
+    "created_by": "agent",
+    "date": "2026-06-16",
+    "hypothesis": "A 5m bar that closes in the extreme of its range on above-median volume reflects intrabar order-flow imbalance that persists one bar; predict next-bar direction in the same direction.",
+    "research_refs": [
+      "close-location-value",
+      "microstructure-momentum"
+    ]
+  },
+  "history": [
+    {
+      "ts": 1781556898,
+      "from": "research",
+      "to": "retired",
+      "reason": "Continuation direction robustly negative (z=-9.2, 0/5 windows). Kept as the documented rejection; the inverse clv_fade carries the edge.",
+      "by": "agent"
+    }
+  ]
+}

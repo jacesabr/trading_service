@@ -33,7 +33,7 @@ workspace: jae's (owner `tea-d8e1tae8bjmc73am2g10`); API auth via the
 
 ### Env vars per service (names only — set in the Render dashboard)
 - **dashboard**: `DATABASE_URL`, `ADMIN_USER`, `ADMIN_PASSWORD` (gates `/admin`; 503 if unset), `SIZE_USD`, `FEE_BPS`.
-- **worker**: `DATABASE_URL`, `NVIDIA_API_KEY`, `ALPACA_KEY`, `ALPACA_SECRET`, `PYTHONUNBUFFERED`.
+- **worker**: `DATABASE_URL`, `NVIDIA_API_KEY`, `ALPACA_KEY`, `ALPACA_SECRET`, `PYTHONUNBUFFERED`. Optional: `ALPACA_PLACE_ORDERS=1` arms **real** Alpaca paper `/v2/orders` (long crypto) in `venues.AlpacaVenue` — **leave unset** (default = quote-cross, no order). `ALPACA_ORDER_NOTIONAL` (default 12, >$10 crypto floor). Do not arm until a closing-leg/round-trip exit exists, or entry-only orders accumulate.
 - **cron**: `DATABASE_URL`, `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY` (PEM contents), `KALSHI_API_BASE`, `ALPACA_KEY`, `ALPACA_SECRET`, `PYTHONUNBUFFERED`.
 
 ### Deploying a change

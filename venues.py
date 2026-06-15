@@ -21,11 +21,14 @@ Credentials (set on the Render worker):
 """
 import json
 import os
+import time
 import urllib.request
 
 
-def _http(url, headers=None, timeout=12):
-    req = urllib.request.Request(url, headers=headers or {})
+def _http(url, headers=None, timeout=12, method="GET", body=None):
+    data = json.dumps(body).encode() if body is not None else None
+    req = urllib.request.Request(url, headers=headers or {}, data=data,
+                                 method=method)
     return json.loads(urllib.request.urlopen(req, timeout=timeout).read())
 
 
@@ -69,26 +72,41 @@ class OandaVenue(Venue):
 
 
 class AlpacaVenue(Venue):
-    """Alpaca paper — crypto (and US stocks). Phase 1: latest crypto quote ->
-    fill crosses the spread. Phase 2: real bracket orders via /v2/orders."""
+    """Alpaca paper — crypto (and US stocks).
+
+    Two execution modes, chosen by the ALPACA_PLACE_ORDERS env flag:
+      * OFF (default) — Phase 1 "quote-cross": snapshot the live book and return
+        a fill at the crossing side. No order is placed; safe everywhere.
+      * ON  — Phase 2 "real order": submit an actual paper market order via
+        POST /v2/orders and return the venue's REAL filled price + order id.
+        Crypto can only go LONG on Alpaca (no spot short), so a short signal
+        (or any failure) falls back to the quote-cross so the runner never
+        breaks. NOTE: entry-only — a closing order is NOT auto-placed here, so
+        only enable in a loop that round-trips (closes) the position, else it
+        accumulates. See DEPLOY.md.
+    """
     name = "alpaca"
     MAP = {"BTCUSDT": "BTC/USD", "ETHUSDT": "ETH/USD",
            "SOLUSDT": "SOL/USD", "DOGEUSDT": "DOGE/USD", "XRPUSDT": "XRP/USD"}
+    PAPER = "https://paper-api.alpaca.markets/v2"
+    ORDER_NOTIONAL = float(os.environ.get("ALPACA_ORDER_NOTIONAL", "12"))  # >$10 crypto floor
 
     def available(self):
         return bool(os.environ.get("ALPACA_KEY") and os.environ.get("ALPACA_SECRET"))
+
+    def _place_orders_on(self):
+        return os.environ.get("ALPACA_PLACE_ORDERS") == "1"
 
     def symbol_for(self, s):
         return self.MAP.get(s)
 
     def _hdr(self):
         return {"APCA-API-KEY-ID": os.environ["ALPACA_KEY"],
-                "APCA-API-SECRET-KEY": os.environ["ALPACA_SECRET"]}
+                "APCA-API-SECRET-KEY": os.environ["ALPACA_SECRET"],
+                "Content-Type": "application/json"}
 
-    def open_trade(self, s, direction, stop, target, kind):
-        sym = self.symbol_for(s)
-        if not sym:
-            return None
+    def _quote_cross(self, sym, direction):
+        """Phase 1: priced off the live book, no order placed."""
         try:
             enc = sym.replace("/", "%2F")
             q = _http("https://data.alpaca.markets/v1beta3/crypto/us/latest/quotes"
@@ -100,6 +118,45 @@ class AlpacaVenue(Venue):
             return dict(fill=float(ask if direction > 0 else bid), ref=f"alpaca:{sym}")
         except Exception:
             return None
+
+    def place_paper_order(self, sym, side, notional=None, poll=8):
+        """REAL paper market order on Alpaca. Returns dict(fill, ref=order_id,
+        status) or None. Polls briefly for the average fill price (crypto fills
+        near-instant 24/7). Public so a one-off verifier can call it directly."""
+        notional = self.ORDER_NOTIONAL if notional is None else notional
+        body = {"symbol": sym, "notional": str(notional), "side": side,
+                "type": "market", "time_in_force": "gtc"}
+        try:
+            o = _http(f"{self.PAPER}/orders", headers=self._hdr(),
+                      method="POST", body=body)
+        except Exception as e:
+            print(f"  [alpaca] order POST failed {sym} {side}: {str(e)[:120]}")
+            return None
+        oid = o.get("id")
+        for _ in range(poll):                        # poll for the fill price
+            fap = o.get("filled_avg_price")
+            if fap:
+                return dict(fill=float(fap), ref=str(oid),
+                            status=o.get("status", "filled"))
+            time.sleep(1)
+            try:
+                o = _http(f"{self.PAPER}/orders/{oid}", headers=self._hdr())
+            except Exception:
+                break
+        # accepted but not yet filled within the poll window
+        return dict(fill=None, ref=str(oid), status=o.get("status", "pending"))
+
+    def open_trade(self, s, direction, stop, target, kind):
+        sym = self.symbol_for(s)
+        if not sym:
+            return None
+        # Phase 2: real order when armed, long crypto only; else quote-cross.
+        if self._place_orders_on() and direction > 0:
+            res = self.place_paper_order(sym, "buy")
+            if res and res.get("fill"):
+                return dict(fill=res["fill"], ref=f"order:{res['ref']}")
+            # not filled in window / failed -> fall back, don't break the runner
+        return self._quote_cross(sym, direction)
 
 
 class BinanceTestnetVenue(Venue):
