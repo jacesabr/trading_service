@@ -1,0 +1,17 @@
+{
+  "name": "gaptrav",
+  "order": 3,
+  "domain": "crypto",
+  "kind": "bracket",
+  "lifecycle": "paper",
+  "data": {"adapter": "binance", "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT", "BNBUSDT"], "timeframe": "5m", "ltf": "1m"},
+  "signal": {"module": "strategies", "fn": "gaptrav_open", "needs": "zones", "params": {"lookback": 100, "va": 0.70}, "param_grid": {}},
+  "exec_model": "bracket_sltp",
+  "gate": {"min_resolved": 400, "live_within_pp": 2.0, "ev_z": 2.0},
+  "provenance": {
+    "created_by": "human",
+    "date": "2026-06-14",
+    "hypothesis": "A candle closing inside a volume-profile fib gap travels to the next zone before the origin border stops it. ~68% touch, ~0 net after costs.",
+    "research_refs": ["gap_traversal.py", "trade_backtest.py", "SYSTEM.md"]
+  }
+}

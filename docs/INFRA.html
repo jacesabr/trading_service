@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang=en>
+<meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Strategy Research Lab — Infrastructure</title>
+<style>
+:root{--bg:#0B1220;--panel:#121B2E;--line:#1E2A44;--ink:#D7E0EF;--dim:#8593AC;
+--ok:#3FB68B;--warn:#F5A623;--no:#E0556B;--mono:ui-monospace,'IBM Plex Mono',monospace}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font:15px/1.6 Inter,system-ui,sans-serif;margin:0;padding:0}
+.wrap{max-width:980px;margin:auto;padding:28px 20px 80px}
+h1{font:600 22px var(--mono);letter-spacing:.02em;margin:0 0 4px}
+h2{font:600 15px var(--mono);text-transform:uppercase;letter-spacing:.05em;color:var(--warn);
+   border-bottom:1px solid var(--line);padding-bottom:6px;margin:34px 0 12px}
+h3{font:600 14px var(--mono);color:var(--ink);margin:18px 0 6px}
+.lead{color:var(--dim);font-size:13px;margin-bottom:8px}
+code,pre{font-family:var(--mono);font-size:13px}
+pre{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px;overflow:auto;color:var(--ink)}
+table{width:100%;border-collapse:collapse;margin:10px 0;font-size:13px}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.04em}
+.tag{font:600 10px var(--mono);padding:2px 7px;border-radius:4px;white-space:nowrap}
+.b{background:#1d3a2e;color:var(--ok)}        /* built */
+.p{background:#3a3320;color:var(--warn)}       /* partial / pending */
+.x{background:#3a2230;color:var(--no)}         /* not started */
+.k{color:var(--dim)}
+a{color:var(--warn)}
+.note{background:var(--panel);border-left:3px solid var(--warn);padding:10px 14px;border-radius:0 8px 8px 0;margin:14px 0;font-size:13px}
+.floor{border-left-color:var(--no)}
+ul{margin:6px 0 6px 0;padding-left:20px}li{margin:3px 0}
+.meta{color:var(--dim);font-size:12px;font-family:var(--mono)}
+</style>
+<div class=wrap>
+
+<h1>Strategy Research Lab — Infrastructure</h1>
+<div class=meta>Living document · maintained by the daily agent · last hand-edit 2026-06-15
+  · <a href="/">public dashboard</a> · <a href="/admin">admin</a></div>
+
+<div class="note floor">
+<b>Maintenance contract (read this, agent).</b> This file is the single source of
+truth for <em>how the system is built</em>. It is NOT auto-generated. Whenever you
+change infrastructure — add a component, table, adapter, route, env var, or change
+the lifecycle/gate — you MUST update this document in the same change, and append a
+dated line to the Changelog at the bottom. Keep the <b>Build status</b> tags honest:
+mark a thing <span class="tag b">built</span> only when it runs and is verified, not
+when it is merely designed. This discipline is what separates the system from
+throwaway code.
+</div>
+
+<h2>1 · What this is</h2>
+<p>A self-operating research lab that discovers, validates, paper-tracks, and
+(after a gated, human-armed budget) live-trades short-horizon signals across many
+markets. A daily <b>Claude Code</b> cloud agent runs the lab via a guarded CLI;
+NVIDIA NIM is the always-on runtime LLM for in-code decisions; Firecrawl + Tavily
+bring web research and prior-art checks into context. The public sees results and a
+verifiable track record; an admin password reveals how each edge was found and used.</p>
+
+<div class="note floor"><b>Two hard floors (never removed).</b>
+<b>Validity floor</b> — nothing claims an edge without passing the leak test +
+purged walk-forward; the harness enforces NO-LOOKAHEAD by construction.
+<b>Money floor</b> — no real capital moves until a human arms a capped budget;
+hard caps + kill switch bound exposure. Everything else is open to explore.</div>
+
+<h2>2 · Architecture</h2>
+<pre>
+ research (Firecrawl/Tavily) ─┐
+                              ▼
+        ┌──────────  lab.py (guarded CLI)  ──────────┐
+        │  new · tweak · leaktest · backtest ·        │
+        │  walkforward · gridsearch · promote ·       │
+        │  retire · lesson(s) · list · status         │
+        └───────┬───────────────────────┬─────────────┘
+                ▼                        ▼
+   rlab/registry.py             rlab/harness.py
+   (manifests + lifecycle)      (leak-safe backtest / leak /
+        │                        walk-forward / grid  — enforces
+        │  manifests             the cardinal rule)
+        ▼                                │
+ rlab/registry/*.json   rlab/impl/*.py   │ reads
+ (one file per strategy) (agent code)    ▼
+        │                        adapters/data/* + adapters/exec/*  [P2]
+        ▼                                │
+   strategies.py (legacy signal fns) ◀───┘
+        │
+        ▼
+   runner.py (live 5m loop) ──▶ db.py (Postgres/SQLite)
+        │                         signals · bets · trades · executions
+        │                         experiments · strategy_versions · lessons
+        ▼
+   dashboard_db.py  ──▶  /  (public: results only)
+                        /admin  (full: method, params, provenance, ledger)
+                        /docs  (this document)
+</pre>
+
+<h2>3 · Components</h2>
+<table>
+<tr><th>File</th><th>Purpose</th><th>Status</th></tr>
+<tr><td><code>rlab/registry.py</code></td><td>Manifest loader, lifecycle state machine, legacy merge. Source of truth for the machine fields.</td><td><span class="tag b">built</span></td></tr>
+<tr><td><code>rlab/registry/*.json</code></td><td>One manifest per strategy. CRUD = create / edit / delete a file.</td><td><span class="tag b">built</span> (8)</td></tr>
+<tr><td><code>rlab/impl/*.py</code></td><td>Agent-authored signal modules for new strategies (pure, as_of-indexed).</td><td><span class="tag b">built</span> (dir)</td></tr>
+<tr><td><code>rlab/harness.py</code></td><td>Leak test, TRAIN/VAL/TEST backtest, purged walk-forward, grid search. Enforces NO-LOOKAHEAD.</td><td><span class="tag b">built</span> (binary; bracket → P2)</td></tr>
+<tr><td><code>lab.py</code></td><td>The guarded CLI the agent + humans drive. Lifecycle guards live here.</td><td><span class="tag b">built</span></td></tr>
+<tr><td><code>db.py</code></td><td>Postgres/SQLite store. signals/bets/trades/executions + experiments/versions/lessons.</td><td><span class="tag b">built</span></td></tr>
+<tr><td><code>strategies.py</code></td><td>The original validated signal functions (single source for the migrated 8).</td><td><span class="tag b">built</span></td></tr>
+<tr><td><code>runner.py</code></td><td>Live 5m loop: signal → DB → resolve. Iterates the registry (generic loop → P2).</td><td><span class="tag p">partial</span></td></tr>
+<tr><td><code>dashboard_db.py</code></td><td>Public results dashboard + admin (auth) + this doc. Redaction whitelist.</td><td><span class="tag b">built</span></td></tr>
+<tr><td><code>adapters/kalshi_client.py</code></td><td>Authenticated Kalshi REST client (RSA-PSS request signing). Hits the real API.</td><td><span class="tag b">built</span></td></tr>
+<tr><td><code>adapters/data/kalshi.py</code></td><td>Kalshi crypto market data: threshold markets, strikes, implied prob, candlesticks.</td><td><span class="tag b">built</span></td></tr>
+<tr><td><code>kalshi_paper.py</code></td><td>Kalshi crypto vol-model: predict P(settle&gt;K) from live spot+vol, settle from Kalshi result. Paper; gated live-order path.</td><td><span class="tag b">built</span></td></tr>
+<tr><td><code>daily.py</code></td><td>Scheduled heartbeat: resolve + collect Kalshi every ~8h (deterministic, no-LLM core).</td><td><span class="tag b">built</span></td></tr>
+<tr><td><code>AGENT.md</code></td><td>The every-8h Claude Code research protocol (incl. the INFRA.html upkeep duty).</td><td><span class="tag b">built</span> (routine: pending)</td></tr>
+<tr><td>other <code>adapters/*</code></td><td>deribit / openmeteo / alpaca data + exec.</td><td><span class="tag x">P2 later</span></td></tr>
+<tr><td>live rails (executor/forex_oanda/alpaca)</td><td>Auto-promotion gate + budget arming + kill switch + 20-stock cap.</td><td><span class="tag x">P5</span></td></tr>
+<tr><td><code>test_redaction.py</code></td><td>Asserts the public payload never leaks strategy internals.</td><td><span class="tag b">built</span></td></tr>
+</table>
+
+<h2>4 · Strategy lifecycle</h2>
+<pre>
+research ──leak PASS & walk-forward robust (≥4/5 windows, both instruments)──▶ paper
+paper ──≥400 resolved & z≥2 (gate)──▶ live_candidate
+live_candidate ──[HUMAN arms capped budget: LIVE_BUDGET_ARMED=1]──▶ live (auto, within caps)
+any ──decay / drift / underperformance──▶ retired   (soft; record kept; never auto hard-delete)
+</pre>
+<ul>
+<li><code>lab promote</code> refuses research→paper without a passing leaktest + walk-forward on record.</li>
+<li><code>lab tweak</code> resets a strategy to <code>research</code> and clears its track record — new params have not earned the old credibility. Re-validation required before money.</li>
+<li><code>lab retire --reason</code> is mandatory-reason and soft. Hard deletion is never automatic.</li>
+</ul>
+
+<h2>5 · The R&D harness (how NO-LOOKAHEAD is guaranteed)</h2>
+<p>Every prediction is made <em>as_of</em> bar <code>t</code> and scored on bar
+<code>t+1</code>'s independent close. Two leak-free evaluation paths:</p>
+<ul>
+<li><b>rule-vectorized</b> — feature-threshold rules (e.g. meanrev/rules.json) over
+<code>features(df, lag=False)</code> in one vectorized pass. Fast, exact.</li>
+<li><b>windowed-callable</b> — universal fallback for arbitrary agent fns: a bounded
+trailing window ending at <code>t</code>, predict <code>t+1</code>. O(n).</li>
+</ul>
+<p class=lead>Verified 2026-06-15: meanrev reproduces TEST 54–57% (z&gt;2 both
+symbols) and is robust 5/5 walk-forward; the settled-negative wick_fade correctly
+fails (~47–49%, z&lt;0). The engine separates the real edge from the dead control.</p>
+
+<h2>6 · Database schema</h2>
+<table>
+<tr><th>Table</th><th>Holds</th></tr>
+<tr><td><code>signals</code></td><td>Every fired signal (strategy, symbol, tf, direction, rule, mode, detail).</td></tr>
+<tr><td><code>bets</code></td><td>Polymarket binary bets (book snapshot, entry, fee, outcome, pnl).</td></tr>
+<tr><td><code>trades</code></td><td>Binary next-bar predictions + SL/TP brackets (entry/stop/target/exit/ret_bps).</td></tr>
+<tr><td><code>executions</code></td><td>Real paper/live fills on external venues (OANDA/Alpaca/Kalshi/testnet).</td></tr>
+<tr><td><code>experiments</code></td><td>Every research/backtest run: hypothesis, manifest, config, result, verdict, robustness.</td></tr>
+<tr><td><code>strategy_versions</code></td><td>Every param tweak: before/after + the re-validation that must pass.</td></tr>
+<tr><td><code>lessons</code></td><td>Do-not-repeat memory: rejected idea, evidence, the bar that would justify revisiting.</td></tr>
+</table>
+<p class=lead>Backend by <code>DATABASE_URL</code>: Postgres/Neon in prod, SQLite (<code>tracker.db</code>) locally. Same API both ways.</p>
+
+<h2>7 · The lab CLI</h2>
+<pre>python lab.py list                         lifecycle + live state of every strategy
+python lab.py status &lt;name&gt;                 full manifest + ledger + live stats
+python lab.py new &lt;name&gt; --domain ... --kind binary --venue ... \
+               --exec ... --adapter ... --symbols A,B --hypothesis "..."
+python lab.py leaktest|backtest|walkforward|gridsearch &lt;name&gt;
+python lab.py tweak &lt;name&gt; --set k=v --reason "..."   (resets track record)
+python lab.py promote &lt;name&gt;                advance lifecycle iff its gate passes
+python lab.py retire &lt;name&gt; --reason "..."  soft-retire (record kept)
+python lab.py lesson --idea "..." --verdict rejected --evidence "..." --redo-bar "..."
+python lab.py lessons                       the do-not-repeat memory (read first)</pre>
+
+<h2>8 · Dashboard — public vs admin</h2>
+<ul>
+<li><b>Public</b> <code>/</code> + <code>/api/stats</code>: results + identity + the
+verifiable track record (hit, equity, recent fills, entry prices). A whitelist
+(<code>PUBLIC_KEYS</code>) strips method/risk/params/rules/gate/provenance/ledger.</li>
+<li><b>Admin</b> <code>/admin</code> + <code>/api/admin/stats</code>: HTTP-Basic
+(<code>ADMIN_USER</code>/<code>ADMIN_PASSWORD</code>). Full manifest, exact params,
+how-found (hypothesis + research refs), experiment ledger, version history, lessons.
+Disabled (503) when no password is set — never open by default.</li>
+<li><b>Docs</b> <code>/docs</code>: this document, served live from <code>docs/INFRA.html</code>.</li>
+</ul>
+
+<h2>9 · Deployment &amp; infrastructure</h2>
+<table>
+<tr><th>Piece</th><th>Where</th></tr>
+<tr><td>Repo</td><td><code>jacesabr/trading_service</code> (GitHub, master, public)</td></tr>
+<tr><td>DB</td><td>Neon project <code>withered-wind-02493492</code>, db <code>neondb</code> (us-west-2)</td></tr>
+<tr><td>Dashboard</td><td>Render web <code>signal-dashboard</code> (free, frankfurt) — gunicorn dashboard_db:app</td></tr>
+<tr><td>Runner</td><td>Render worker <code>signal-runner</code> (starter, frankfurt — Binance blocks US IPs)</td></tr>
+<tr><td>Daily agent</td><td>Claude Code scheduled cloud routine, <b>every 8h (3×/day)</b> — P4</td></tr>
+</table>
+<p class=lead>Auto-deploy is OFF (no GitHub webhook): after pushing, trigger a deploy
+via the Render API. Env vars (worker + agent): <code>DATABASE_URL</code>,
+<code>NVIDIA_API_KEY</code> (runtime LLM), <code>FIRECRAWL_API_KEY</code>,
+<code>TAVILY_API_KEY</code> (research), <code>ADMIN_USER</code>/<code>ADMIN_PASSWORD</code>,
+and (P2) <code>KALSHI_*</code>, <code>ALPACA_*</code>. No <code>ANTHROPIC_API_KEY</code> —
+the daily run is Claude Code, not the API.</p>
+
+<h2>10 · Domains &amp; adapters</h2>
+<table>
+<tr><th>Domain</th><th>Data</th><th>Exec / paper</th><th>Status</th></tr>
+<tr><td>Crypto spot/perp</td><td>Binance Vision (keyless)</td><td>spot_bps / bracket_sltp / polymarket_binary</td><td><span class="tag b">built</span></td></tr>
+<tr><td>Prediction markets</td><td>Polymarket (have) · <b>Kalshi (live, RSA key wired)</b></td><td>polymarket_binary · <b>kalshi vol-model (paper)</b></td><td><span class="tag b">built</span> (paper, real API)</td></tr>
+<tr><td>Crypto options</td><td>Deribit (keyless public)</td><td>options_mid</td><td><span class="tag x">P2</span></td></tr>
+<tr><td>Weather</td><td>Open-Meteo (keyless) → Kalshi</td><td>kalshi_binary</td><td><span class="tag x">P2</span></td></tr>
+<tr><td>Equities</td><td>Alpaca (free key)</td><td>alpaca_equity (paper↔live flag) · ≤20 live positions</td><td><span class="tag x">P2 — needs keys</span></td></tr>
+</table>
+<div class=note><b>Needs from the operator:</b> free <b>Kalshi</b> and <b>Alpaca</b>
+API keys (accounts the operator creates) for those adapters; <b>arming the live
+budget</b> for any real money (P5). Deribit + Open-Meteo are keyless.</div>
+
+<h2>11 · Build status</h2>
+<table>
+<tr><th>Phase</th><th>Scope</th><th>Status</th></tr>
+<tr><td>P0</td><td>Manifests + ledger tables + lab.py CLI + migrate 8 strategies</td><td><span class="tag b">done</span></td></tr>
+<tr><td>P1</td><td>Leak-safe harness; reproduces known numbers</td><td><span class="tag b">done</span></td></tr>
+<tr><td>P3</td><td>Dashboard public/admin split + redaction test</td><td><span class="tag b">done</span></td></tr>
+<tr><td>P2</td><td>Adapters — <b>Kalshi crypto live+paper done</b>; deribit/openmeteo/alpaca + generic runner + bracket resolution later</td><td><span class="tag p">kalshi done</span></td></tr>
+<tr><td>P4</td><td>AGENT.md + daily.py heartbeat <b>built</b>; the scheduled cloud routine + Firecrawl/Tavily ingestion pending</td><td><span class="tag p">partial</span></td></tr>
+<tr><td>P5</td><td>Live rails: gate + budget arming + kill switch + 20-stock cap (paper-only for now by choice)</td><td><span class="tag x">pending</span></td></tr>
+</table>
+
+<h2>12 · Changelog</h2>
+<ul>
+<li><span class=meta>2026-06-15</span> — P0/P1/P3 built &amp; verified. Added rlab package, 8 manifests, ledger tables, lab.py, leak-safe harness, dashboard public/admin split + redaction test, this document.</li>
+<li><span class=meta>2026-06-15</span> — Kalshi wired end-to-end against the real API (RSA auth verified). Added adapters/kalshi_client.py + adapters/data/kalshi.py, kalshi_paper.py (live-spot vol model → P(settle&gt;K), settled from Kalshi ground-truth result), strategy <code>kalshi_crypto_model</code> (research/data-collection, paper), daily.py heartbeat, AGENT.md. Recorded + resolved real predictions in test. Secrets in gitignored .env/secrets/. Paper-only (no live money).</li>
+</ul>
+
+</div>
+</html>

@@ -1,0 +1,24 @@
+{
+  "name": "kalshi_crypto_model",
+  "order": 9,
+  "label": "Kalshi crypto · vol model",
+  "domain": "prediction_market",
+  "kind": "binary",
+  "venue": "kalshi",
+  "status": "research · data-collection",
+  "lifecycle": "research",
+  "role": "data-collection",
+  "symbols": "BTC/ETH",
+  "data": {"adapter": "kalshi", "symbols": ["BTC", "ETH"], "timeframe": "event"},
+  "signal": {"module": "kalshi_paper", "fn": "collect", "live_collected": true, "params": {"window_s": 28800, "p_lo": 0.05, "p_hi": 0.95}, "param_grid": {}},
+  "exec_model": "kalshi_binary",
+  "gate": {"min_resolved": 400, "live_within_pp": 2.0, "ev_z": 2.0},
+  "method": "Models P(BTC/ETH settles above strike) from live spot (Binance, fallback Coinbase) + recent 5m realized vol under a driftless lognormal, predicts each near-money Kalshi crypto threshold market, and scores the call against Kalshi's finalized ground-truth result. Tests whether a simple vol model is calibrated / beats the market on Kalshi crypto settlement.",
+  "risk": "Paper / data-collection — NO edge claimed yet; accumulating model-vs-settlement calls to measure calibration. Collected live by the daily job (not the CSV harness). Live Kalshi orders gated behind the budget arm (P5).",
+  "provenance": {
+    "created_by": "agent",
+    "date": "2026-06-15",
+    "hypothesis": "A driftless lognormal vol model on live spot prices is well-calibrated for short-horizon Kalshi crypto settlement; deviations of the market-implied price from the model are a candidate edge.",
+    "research_refs": ["adapters/data/kalshi.py", "kalshi_paper.py"]
+  }
+}
