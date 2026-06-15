@@ -220,6 +220,7 @@ budget</b> for any real money (P5). Deribit + Open-Meteo are keyless.</div>
 <h2>12 · Changelog</h2>
 <ul>
 <li><span class=meta>2026-06-15</span> — P0/P1/P3 built &amp; verified. Added rlab package, 8 manifests, ledger tables, lab.py, leak-safe harness, dashboard public/admin split + redaction test, this document.</li>
+<li><span class=meta>2026-06-15</span> — <b>Live paper refuted the backtest ranking.</b> After ~1 day: meanrev (the "validated edge") was the WORST — 45.9% over 109 Polymarket paper bets vs backtest 54-57%, −$2080 — DEMOTED live_candidate→paper. far_targets (previously "settled-dead") was the only net-positive (+3.4 net bps over 358, though 26.8% hit = high variance, watch). Lessons logged. The paper gate did its job: zero real money at risk. Validates testing live over trusting backtests.</li>
 <li><span class=meta>2026-06-15</span> — Kalshi wired end-to-end against the real API (RSA auth verified). Added adapters/kalshi_client.py + adapters/data/kalshi.py, kalshi_paper.py (live-spot vol model → P(settle&gt;K), settled from Kalshi ground-truth result), strategy <code>kalshi_crypto_model</code> (research/data-collection, paper), daily.py heartbeat, AGENT.md. Recorded + resolved real predictions in test. Secrets in gitignored .env/secrets/. Paper-only (no live money).</li>
 </ul>
 
