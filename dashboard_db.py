@@ -56,6 +56,7 @@ def stats():
     now = int(time.time())
     bets = db.recent_bets(800)
     trades = db.recent_trades(2000)
+    execs = db.recent_executions(2000)
     act = db.activity()
 
     out = {"last_update": now, "strategies": {}}
@@ -131,6 +132,20 @@ def stats():
                     rwm = float(np.mean(rw))
                     card.update(rw_base=round(rwm, 3),
                                 edge_pp=round((win_br - rwm) * 100, 1))
+
+        # real-venue executions for this strategy (fill already crossed the
+        # venue's real spread -> net only deducts the fee)
+        ex = [e for e in execs if e["strategy"] == name]
+        if ex:
+            vmap = {}
+            for e in ex:
+                vmap.setdefault(e["venue"], []).append(e)
+            card["venues"] = {
+                v: dict(n=len(rs),
+                        hit=round(float(np.mean([r["won"] for r in rs])), 3),
+                        net_bps=round(float(np.mean([r["ret_bps"] for r in rs]))
+                                      - FEE_BPS, 1))
+                for v, rs in vmap.items()}
         out["strategies"][name] = card
     return jsonify(out)
 
@@ -205,6 +220,12 @@ function kpis(c){
    <div class=kpi><small>Gross bps</small>${c.exp_bps>0?'+':''}${c.exp_bps}</div>
    <div class="kpi ${c.net_bps>0?'pos':'neg'}"><small>Net bps</small>${c.net_bps>0?'+':''}${c.net_bps}</div></div>`;
 }
+function venuesLine(c){
+ if(!c.venues||!Object.keys(c.venues).length) return '';
+ const parts=Object.entries(c.venues).map(([v,x])=>
+   `<b style="color:var(--ink)">${v}</b> ${pct(x.hit)} <span class="${x.net_bps>0?'pos':'neg'}">${x.net_bps>0?'+':''}${x.net_bps}bps</span> (${x.n})`);
+ return `<div class=status>real venues: ${parts.join(' · ')}</div>`;
+}
 function costnote(c){
  const sp = c.spread_bps==null ? 'measuring…'
    : (c.spread_bps+' bps live ('+c.spread_n+' trades)');
@@ -232,7 +253,7 @@ async function tick(){
      ${c.last_age_min!=null?('last signal '+f(c.last_age_min,0)+'m ago'):'no signals yet'}
      · ${c.pending} pending${armed?' · armed':''} · ${c.symbols}</div>
    <div class=method>${c.method}</div>
-   ${c.n?kpis(c)+baseline(c)+(c.unit==='bps'?costnote(c):'')+'<canvas id="cv_'+name+'"></canvas>'+rowsTable(c):'<div class=empty>No resolved trades yet.</div>'}
+   ${c.n?kpis(c)+baseline(c)+(c.unit==='bps'?costnote(c):'')+venuesLine(c)+'<canvas id="cv_'+name+'"></canvas>'+rowsTable(c):'<div class=empty>No resolved trades yet.</div>'}
    <div class=risk>${c.risk}</div>`;
   if(c.n&&c.equity){
    const ctx=document.getElementById('cv_'+name);

@@ -29,7 +29,10 @@ import pandas as pd
 
 import db
 import strategies as S
+import venues
 import paper_trader as pt   # klines(), find_market(), best_book(), taker_fill(), fee_fraction(), candle_outcome()
+
+_VENUES = venues.active_venues()   # real paper venues whose keys are present
 
 # Polymarket has 5m Up/Down markets only for BTC/ETH -> those get real bets.
 POLY = {"btc": "BTCUSDT", "eth": "ETHUSDT"}
@@ -117,12 +120,34 @@ def _one_candle(symbol, start_ms):
 
 
 # --------------------------- recording helpers ---------------------------
+def _route_venues(sid, symbol, direction, stop, target, kind, boundary=None):
+    """Place a real paper fill on each active external venue alongside the sim
+    trade (same signal_id), so the dashboard can compare sim vs real."""
+    if not _VENUES:
+        return
+    side = "long" if direction > 0 else "short"
+    for v in _VENUES:
+        try:
+            res = v.open_trade(symbol, direction, stop, target, kind)
+        except Exception:
+            res = None
+        if not res:
+            continue
+        db.record_execution(
+            sid, v.name, symbol, side, round(float(res["fill"]), 6),
+            None if kind == "binary" else round(float(stop), 6),
+            None if kind == "binary" else round(float(target), 6),
+            ref=res.get("ref", ""), ts=boundary if kind == "binary" else None)
+
+
 def _record_binary(strat, symbol, dirn, rule, boundary, entry, detail=None):
     """A next-5m-close prediction, stored in trades with stop/target NULL and
     ts=boundary (the window it predicts). dirn: +1 up / -1 down."""
     sid = db.record_signal(strat, symbol, "5m", dirn, rule, detail=detail or {})
     db.record_trade(sid, symbol, "long" if dirn > 0 else "short",
                     round(entry, 6), None, None, ts=boundary)
+    _route_venues(sid, symbol, dirn, None, None, "binary", boundary)
+    return sid
 
 
 def _record_bracket(strat, symbol, tr, detail=None):
@@ -132,6 +157,8 @@ def _record_bracket(strat, symbol, tr, detail=None):
     db.record_trade(sid, symbol, "long" if tr["direction"] > 0 else "short",
                     round(entry, 6), round(float(tr["stop"]), 6),
                     round(float(tr["target"]), 6))
+    _route_venues(sid, symbol, tr["direction"], tr["stop"], tr["target"], "bracket")
+    return sid
 
 
 def _maybe_bet(coin, symbol, side, rule, boundary, probe):
@@ -232,6 +259,49 @@ def cycle(probe=False):
 
 
 # ------------------------------ resolve ----------------------------------
+def _resolve_position(p, now_ms):
+    """Resolve one trade/execution row (entry/stop/target/side/ts) from Binance
+    candles. target IS NULL -> binary next-bar; else bracket SL/TP. Returns
+    (exit, outcome, won, ret_bps, held) or None if not yet resolvable."""
+    if p["target"] is None:                          # binary next-bar prediction
+        boundary = int(p["ts"])
+        if now_ms < (boundary + WIN) * 1000 + 8000:
+            return None
+        try:
+            o, _h, _l, c = _one_candle(p["symbol"], boundary * 1000)
+        except Exception:
+            return None
+        d = 1 if p["side"] == "long" else -1
+        up = c >= o
+        won = int((up and d > 0) or (not up and d < 0))
+        ret = d * (c - o) / o * 1e4
+        return round(c, 6), "up" if up else "down", won, round(ret, 1), 1
+
+    # bracket SL/TP traversal — resolve against THIS position's own window
+    try:
+        raw = _klines_from(p["symbol"], int(p["ts"]) * 1000, BRACKET_MAXBARS + 5)
+    except Exception:
+        return None
+    seg = raw[raw.ts > p["ts"] * 1000].head(BRACKET_MAXBARS).reset_index(drop=True)
+    if len(seg) < 1:
+        return None
+    d = 1 if p["side"] == "long" else -1
+    outcome = exit_p = None; held = len(seg)
+    for i, row in seg.iterrows():
+        stop_hit = (row.close <= p["stop"]) if d > 0 else (row.close >= p["stop"])
+        tgt_hit = (row.high >= p["target"]) if d > 0 else (row.low <= p["target"])
+        if stop_hit:
+            outcome, exit_p, held = "stop", p["stop"], i + 1; break
+        if tgt_hit:
+            outcome, exit_p, held = "target", p["target"], i + 1; break
+    if outcome is None:
+        if now_ms < (int(p["ts"]) + BRACKET_MAXBARS * WIN) * 1000:
+            return None
+        outcome, exit_p = "timeout", float(seg["close"].iloc[-1])
+    ret = d * (exit_p - p["entry"]) / p["entry"] * 1e4
+    return round(exit_p, 6), outcome, int(outcome == "target"), round(ret, 1), held
+
+
 def resolve():
     bets, trades = db.open_positions()
     now_ms = time.time() * 1000
@@ -251,51 +321,17 @@ def resolve():
         db.resolve_bet(b["id"], out, won, pnl)
         print(f"  resolved BET {b['symbol']} {b['side']} -> {out} pnl={pnl}")
 
-    for t in trades:
-        if t["target"] is None:                     # binary next-bar prediction
-            boundary = int(t["ts"])
-            if now_ms < (boundary + WIN) * 1000 + 8000:
-                continue
-            try:
-                o, _h, _l, c = _one_candle(t["symbol"], boundary * 1000)
-            except Exception:
-                continue
-            d = 1 if t["side"] == "long" else -1
-            up = c >= o
-            won = int((up and d > 0) or (not up and d < 0))
-            ret = d * (c - o) / o * 1e4
-            db.resolve_trade(t["id"], round(c, 6), "up" if up else "down",
-                             won, round(ret, 1), 1)
-            print(f"  resolved {t['symbol']} {t['side']} (binary) -> "
-                  f"{'up' if up else 'down'} {ret:+.0f}bps")
-            continue
+    for t in trades:                                # internal-sim trades
+        r = _resolve_position(t, now_ms)
+        if r:
+            db.resolve_trade(t["id"], r[0], r[1], r[2], r[3], r[4])
+            print(f"  resolved TRADE {t['symbol']} {t['side']} -> {r[1]} {r[3]:+.0f}bps")
 
-        # bracket SL/TP traversal — resolve against THIS trade's own window
-        try:
-            raw = _klines_from(t["symbol"], int(t["ts"]) * 1000, BRACKET_MAXBARS + 5)
-        except Exception:
-            continue
-        seg = raw[raw.ts > t["ts"] * 1000].head(BRACKET_MAXBARS).reset_index(drop=True)
-        if len(seg) < 1:
-            continue
-        d = 1 if t["side"] == "long" else -1
-        outcome = exit_p = None; held = len(seg)
-        for i, row in seg.iterrows():
-            stop_hit = (row.close <= t["stop"]) if d > 0 else (row.close >= t["stop"])
-            tgt_hit = (row.high >= t["target"]) if d > 0 else (row.low <= t["target"])
-            if stop_hit:
-                outcome, exit_p, held = "stop", t["stop"], i + 1; break
-            if tgt_hit:
-                outcome, exit_p, held = "target", t["target"], i + 1; break
-        if outcome is None:
-            # neither border hit; only time out once the FULL window has elapsed
-            if now_ms < (int(t["ts"]) + BRACKET_MAXBARS * WIN) * 1000:
-                continue
-            outcome, exit_p = "timeout", float(seg["close"].iloc[-1])
-        ret = d * (exit_p - t["entry"]) / t["entry"] * 1e4
-        db.resolve_trade(t["id"], round(exit_p, 6), outcome,
-                         int(outcome == "target"), round(ret, 1), held)
-        print(f"  resolved TRADE {t['symbol']} {t['side']} -> {outcome} {ret:+.0f}bps")
+    for e in db.open_executions():                  # real venue paper fills
+        r = _resolve_position(e, now_ms)
+        if r:
+            db.resolve_execution(e["id"], r[0], r[1], r[2], r[3], r[4])
+            print(f"  resolved EXEC[{e['venue']}] {e['symbol']} {e['side']} -> {r[1]} {r[3]:+.0f}bps")
 
 
 if __name__ == "__main__":

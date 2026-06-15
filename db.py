@@ -60,6 +60,12 @@ CREATE TABLE IF NOT EXISTS trades(
   entry DOUBLE PRECISION, stop DOUBLE PRECISION, target DOUBLE PRECISION,
   exit DOUBLE PRECISION, outcome TEXT, won INTEGER,
   ret_bps DOUBLE PRECISION, bars_held INTEGER);
+CREATE TABLE IF NOT EXISTS executions(
+  id {SERIAL},
+  signal_id INTEGER, ts BIGINT, venue TEXT, symbol TEXT, side TEXT,
+  entry DOUBLE PRECISION, stop DOUBLE PRECISION, target DOUBLE PRECISION,
+  exit DOUBLE PRECISION, outcome TEXT, won INTEGER,
+  ret_bps DOUBLE PRECISION, bars_held INTEGER, ref TEXT);
 """
 # SQLite needs DOUBLE PRECISION -> REAL, BIGINT ok; it tolerates these but be safe:
 if not IS_PG:
@@ -69,6 +75,7 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS ix_sig_ts ON signals(ts)",
     "CREATE INDEX IF NOT EXISTS ix_bet_sig ON bets(signal_id)",
     "CREATE INDEX IF NOT EXISTS ix_trade_sig ON trades(signal_id)",
+    "CREATE INDEX IF NOT EXISTS ix_exec_sig ON executions(signal_id)",
 ]
 
 
@@ -133,6 +140,36 @@ def resolve_trade(trade_id, exit_price, outcome, won, ret_bps, bars_held):
                 f"bars_held={PH} WHERE id={PH}",
                 (exit_price, outcome, int(won), ret_bps, bars_held, trade_id))
     c.commit(); cur.close(); c.close()
+
+
+def record_execution(signal_id, venue, symbol, side, entry, stop, target,
+                     ref="", ts=None):
+    """A REAL paper fill on an external venue (OANDA/Alpaca/testnet/Kalshi),
+    recorded alongside the internal-sim trade for the same signal."""
+    return _insert("executions",
+                   ["signal_id", "ts", "venue", "symbol", "side", "entry",
+                    "stop", "target", "exit", "outcome", "won", "ret_bps",
+                    "bars_held", "ref"],
+                   [signal_id, ts or int(time.time()), venue, symbol, side,
+                    entry, stop, target, None, "", None, None, None, ref])
+
+
+def resolve_execution(exec_id, exit_price, outcome, won, ret_bps, bars_held):
+    c = conn(); cur = c.cursor()
+    cur.execute(f"UPDATE executions SET exit={PH},outcome={PH},won={PH},"
+                f"ret_bps={PH},bars_held={PH} WHERE id={PH}",
+                (exit_price, outcome, int(won), ret_bps, bars_held, exec_id))
+    c.commit(); cur.close(); c.close()
+
+
+def open_executions():
+    return _rows("SELECT * FROM executions WHERE outcome=''")
+
+
+def recent_executions(limit=2000):
+    return _rows("SELECT e.*, s.strategy FROM executions e JOIN signals s "
+                 "ON e.signal_id=s.id WHERE e.outcome!='' "
+                 f"ORDER BY e.ts DESC LIMIT {int(limit)}")
 
 
 def _rows(sql, args=()):
