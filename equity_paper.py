@@ -23,7 +23,8 @@ from zone_breaks import compute_profile
 from gap_traversal import ZONES
 
 SYMBOLS = os.environ.get("EQUITY_SYMBOLS",
-    "SPY,QQQ,AAPL,MSFT,NVDA,TSLA,AMZN,META").split(",")
+    "SPY,QQQ,AAPL,MSFT,NVDA,TSLA,AMZN,META,GOOGL,AMD,NFLX,AVGO,JPM,XOM,"
+    "BAC,DIS,INTC,COIN,PLTR,UBER,SHOP,MU,SOFI,RIVN").split(",")
 LTF = {"5m": "1m", "15m": "5m", "1h": "15m"}
 ZONE_TFS = ["5m", "15m", "1h"]
 BRACKET_MAXBARS = 24
@@ -122,7 +123,7 @@ def _bracket(base, df, bands):
 
 
 SCAN = int(os.environ.get("EQUITY_SCAN_BARS", "120"))   # bars/run to backfill
-MAX_PER_RUN = int(os.environ.get("EQUITY_MAX_PER_RUN", "3000"))
+MAX_PER_RUN = int(os.environ.get("EQUITY_MAX_PER_RUN", "4000"))
 
 
 def _last_ts(strategy, symbol):
@@ -138,6 +139,7 @@ def collect(probe=False):
     Resolution settles them from subsequent real Alpaca bars."""
     ensure_manifests()
     placed = 0
+    batch = []                                   # accumulate, flush in one write
     cache = {}
 
     def _bars(sym, tf):
@@ -157,46 +159,43 @@ def collect(probe=False):
                 continue
             last = 0 if probe else _last_ts(name, sym)
             start = max(warm, len(df) - SCAN)
+            prev_fired = False                   # edge-trigger: record on rising edge
             for i in range(start, len(df)):
-                if placed >= MAX_PER_RUN:
+                if len(batch) >= MAX_PER_RUN:
                     break
-                bar_ts = int(df["ts"].iloc[i] // 1000)
-                if bar_ts <= last:
-                    continue
                 w = df.iloc[:i + 1]
                 entry = float(df["close"].iloc[i])
+                # evaluate the signal at bar i
+                d = rule = stop = tgt = None
                 if kind == "bracket":
                     bands = equity_zones(w)
                     tr = _bracket(base, w, bands) if bands else None
-                    if not tr:
-                        continue
-                    d = tr["direction"]
-                    if (tr["target"] - entry) * d <= 0 or \
-                       (entry - tr["stop"]) * d <= 0:
-                        continue
-                    if probe:
-                        print(f"  {name} {sym} @bar{i}: "
-                              f"{'long' if d>0 else 'short'}"); continue
-                    sid = db.record_signal(name, sym, tf, d,
-                                           tr.get("rule", base), detail={"tf": tf},
-                                           ts=bar_ts)
-                    db.record_trade(sid, sym, "long" if d > 0 else "short",
-                                    round(entry, 4), round(tr["stop"], 4),
-                                    round(tr["target"], 4), ts=bar_ts)
-                    placed += 1
+                    if tr and (tr["target"] - entry) * tr["direction"] > 0 and \
+                       (entry - tr["stop"]) * tr["direction"] > 0:
+                        d = tr["direction"]; rule = tr.get("rule", base)
+                        stop = round(tr["stop"], 4); tgt = round(tr["target"], 4)
                 else:
-                    d, rule = _binary(base, w)
-                    if not d:
-                        continue
-                    if probe:
-                        print(f"  {name} {sym} @bar{i}: {'up' if d>0 else 'down'}")
-                        continue
-                    sid = db.record_signal(name, sym, tf, d, rule,
-                                           detail={"tf": tf}, ts=bar_ts)
-                    db.record_trade(sid, sym, "long" if d > 0 else "short",
-                                    round(entry, 4), None, None, ts=bar_ts)
-                    placed += 1
-    return placed
+                    dd, rr = _binary(base, w)
+                    if dd:
+                        d, rule = dd, rr
+                fired = d is not None
+                edge = fired and not prev_fired   # only a NEW signal counts
+                prev_fired = fired
+                bar_ts = int(df["ts"].iloc[i] // 1000)
+                if not edge or bar_ts <= last:
+                    continue
+                if probe:
+                    print(f"  {name} {sym} @bar{i}: "
+                          f"{'long/up' if d>0 else 'short/down'} ({rule})")
+                    continue
+                batch.append(dict(strategy=name, symbol=sym, timeframe=tf,
+                                  direction=d, rule=rule or base,
+                                  detail={"tf": tf}, ts=bar_ts,
+                                  side="long" if d > 0 else "short",
+                                  entry=round(entry, 4), stop=stop, target=tgt))
+    if probe:
+        return placed
+    return db.record_signals_trades(batch)       # one connection, one commit
 
 
 def resolve_open():
@@ -204,7 +203,7 @@ def resolve_open():
         "SELECT t.*, s.strategy, s.timeframe FROM trades t "
         "JOIN signals s ON t.signal_id=s.id "
         f"WHERE t.outcome='' AND s.strategy LIKE {db.PH}", ("%_eq_%",))
-    n = 0
+    ups = []
     cache = {}
     for t in rows:
         tf = t["timeframe"]; sym = t["symbol"]
@@ -227,9 +226,8 @@ def resolve_open():
             up = c >= o
             won = int((up and d > 0) or (not up and d < 0))
             ret = d * (c - o) / o * 1e4
-            db.resolve_trade(t["id"], round(c, 4), "up" if up else "down",
-                             won, round(ret, 1), 1)
-            n += 1
+            ups.append((round(c, 4), "up" if up else "down", won,
+                        round(ret, 1), 1, t["id"]))
         else:                                    # bracket
             stop, tgt = float(t["stop"]), float(t["target"])
             entry = float(t["entry"]); outcome = None
@@ -248,10 +246,9 @@ def resolve_open():
                 outcome, held = "timeout", BRACKET_MAXBARS
             won = int(outcome == "target")
             ret = d * (exitp - entry) / entry * 1e4
-            db.resolve_trade(t["id"], round(exitp, 4), outcome, won,
-                             round(ret, 1), held)
-            n += 1
-    return n
+            ups.append((round(exitp, 4), outcome, won, round(ret, 1), held,
+                        t["id"]))
+    return db.resolve_trades_batch(ups)          # one connection, executemany
 
 
 if __name__ == "__main__":

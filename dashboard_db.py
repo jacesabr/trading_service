@@ -35,6 +35,7 @@ PUBLIC_KEYS = {
     "role", "pending", "last_age_min", "n", "hit", "unit", "equity", "exp_bps",
     "net_bps", "ev", "avg_entry", "rw_base", "edge_pp", "recent", "venues",
     "spread_bps", "spread_n", "fee_bps", "cal",
+    "platform", "mode", "pnl_total", "rank_score", "confidence",
 }
 
 
@@ -62,6 +63,7 @@ def _admin_ok():
 # maker-rebate view. Net = gross − avg_measured_spread − FEE_BPS.
 FEE_BPS = float(os.environ.get("FEE_BPS", "4"))
 app = Flask(__name__)
+app.json.sort_keys = False        # preserve our most->least profitable ordering
 db.init()
 
 
@@ -79,6 +81,35 @@ def _spread_of(row):
 
 def _age_min(ts, now):
     return round((now - int(ts)) / 60, 1) if ts else None
+
+
+PLATFORM = {"polymarket": "Polymarket", "kalshi": "Kalshi", "alpaca": "Alpaca",
+            "spot": "Binance spot", "oanda": "OANDA"}
+DATASRC = {"crypto": "Binance", "prediction_market": "Kalshi", "equity": "Alpaca"}
+
+
+def _why(meta, card):
+    """Plain-language note on why this strategy's numbers can be trusted, shown
+    per card. Built from how it actually resolves + the sample's honest caveats."""
+    n = card.get("n", 0)
+    if not n:
+        return "No resolved trades yet — numbers appear once positions settle."
+    venue = meta.get("venue", ""); domain = meta.get("domain", "")
+    if venue == "kalshi":
+        how = "Each call is settled by Kalshi's official finalized result"
+    elif venue == "polymarket":
+        how = ("Resolved on the same Binance 5m candle Polymarket settles on")
+    else:
+        how = f"Resolved on real {DATASRC.get(domain, venue)} bars"
+    base = (f"Paper, real data. {how}. The signal is computed only from "
+            f"already-closed bars and scored on a later bar, so no future "
+            f"information can leak in. n={n}.")
+    if n < 100:
+        base += " Small sample — treat as indicative."
+    elif domain == "equity":
+        base += (" Samples are somewhat correlated (nearby signals in one move), "
+                 "so trust the hit rate more than the exact bps until n grows.")
+    return base
 
 
 def _build_cards():
@@ -103,9 +134,11 @@ def _build_cards():
                     signal=meta.get("signal", {}), gate=meta.get("gate", {}),
                     exec_model=meta.get("exec_model", ""),
                     provenance=meta.get("provenance", {}),
+                    platform=PLATFORM.get(meta.get("venue", ""), meta.get("venue", "")),
+                    mode="paper",               # all strategies are paper for now
                     pending=a.get("pending", 0),
                     last_age_min=_age_min(a.get("last_ts"), now),
-                    n=0, recent=[])
+                    n=0, recent=[], pnl_total=0, rank_score=-1e12)
 
         if meta["venue"] == "polymarket":           # meanrev -> bets
             rows = [b for b in bets if b["strategy"] == name]
@@ -132,6 +165,8 @@ def _build_cards():
                                  outcome=b["outcome"], pnl=b["pnl"])
                             for b in sorted(res, key=lambda b: b["ts"],
                                             reverse=True)[:25]])
+                card["pnl_total"] = round(float(pnl.sum()), 2)   # total $ P&L
+                card["rank_score"] = round(float(pnl.mean()) / SIZE_USD * 1e4, 1)
         else:                                        # everything else -> trades
             rows = [t for t in trades if t["strategy"] == name]
             res = [t for t in rows if t["outcome"]]
@@ -170,6 +205,9 @@ def _build_cards():
                     rwm = float(np.mean(rw))
                     card.update(rw_base=round(rwm, 3),
                                 edge_pp=round((win_br - rwm) * 100, 1))
+                net_cum = float(ret.sum()) - len(res) * cost
+                card["pnl_total"] = round(net_cum, 1)            # cumulative net bps
+                card["rank_score"] = round(gross - cost, 2)      # net bps / trade
 
         # real-venue executions for this strategy (fill already crossed the
         # venue's real spread -> net only deducts the fee)
@@ -184,7 +222,12 @@ def _build_cards():
                         net_bps=round(float(np.mean([r["ret_bps"] for r in rs]))
                                       - FEE_BPS, 1))
                 for v, rs in vmap.items()}
+        card["confidence"] = _why(meta, card)
         out["strategies"][name] = card
+    # sort most -> least profitable (per-trade net edge, bps-equivalent)
+    out["strategies"] = dict(sorted(out["strategies"].items(),
+                                    key=lambda kv: kv[1].get("rank_score", -1e12),
+                                    reverse=True))
     return out
 
 
@@ -239,6 +282,10 @@ h1{font:600 16px var(--mono);letter-spacing:.04em}
 canvas{max-height:120px;margin:4px 0}
 .empty{color:var(--dim);font-size:12px;padding:14px 0;text-align:center}
 .risk{font-size:11px;color:var(--dim);border-top:1px solid var(--line);padding-top:8px;margin-top:auto}
+.paper{font-size:9px;background:#22304a;color:#9db4e0;padding:1px 5px;border-radius:3px;font-weight:600;letter-spacing:.04em}
+.pnl{font:700 22px var(--mono);margin:8px 0 6px;font-variant-numeric:tabular-nums}
+.pnl small{font:400 10px var(--mono);color:var(--dim);text-transform:uppercase;letter-spacing:.04em}
+.conf{font-size:11px;color:var(--dim);background:#0f1828;border-left:2px solid var(--up);padding:6px 9px;border-radius:0 6px 6px 0;margin:8px 0}
 details{margin-top:8px}summary{font-size:11px;color:var(--live);cursor:pointer;font-family:var(--mono)}
 table{width:100%;border-collapse:collapse;font:11px var(--mono);margin-top:6px}
 th,td{text-align:right;padding:2px 4px;border-bottom:1px solid var(--line)}
@@ -280,6 +327,15 @@ function kpis(c){
    <div class=kpi><small>Gross bps</small>${c.exp_bps>0?'+':''}${c.exp_bps}</div>
    <div class="kpi ${c.net_bps>0?'pos':'neg'}"><small>Net bps</small>${c.net_bps>0?'+':''}${c.net_bps}</div></div>`;
 }
+function pnlLine(c){
+ if(!c.n) return '';
+ const v=c.pnl_total, pos=v>=0;
+ const txt = c.unit==='$' ? ((pos?'+$':'−$')+Math.abs(v).toFixed(2))
+                          : ((pos?'+':'')+v+' bps');
+ return `<div class=pnl><span class="${pos?'pos':'neg'}">${txt}</span>`
+        +` <small>total P&amp;L · paper${c.unit==='bps'?' · net of costs':''}</small></div>`;
+}
+function confLine(c){ return c.confidence?`<div class=conf>✓ ${c.confidence}</div>`:''; }
 function venuesLine(c){
  if(!c.venues||!Object.keys(c.venues).length) return '';
  const parts=Object.entries(c.venues).map(([v,x])=>
@@ -312,8 +368,10 @@ async function tick(){
    <div class=status><span class=dot style="background:${alive?'var(--live)':'var(--dim)'}"></span>
      ${c.last_age_min!=null?('last signal '+f(c.last_age_min,0)+'m ago'):'no signals yet'}
      · ${c.pending} pending${armed?' · armed':''} · ${c.symbols}</div>
-   <div class=method>${c.domain||''} · ${c.kind||''} · ${c.venue||''}</div>
-   ${c.n?kpis(c)+baseline(c)+(c.unit==='bps'?costnote(c):'')+venuesLine(c)+'<canvas id="cv_'+name+'"></canvas>'+rowsTable(c):'<div class=empty>No resolved trades yet.</div>'}
+   <div class=method><b style="color:var(--ink)">${c.platform||c.venue||''}</b>
+     <span class=paper>${(c.mode||'paper').toUpperCase()}</span>
+     · ${c.domain||''} · ${c.kind||''}</div>
+   ${c.n?pnlLine(c)+kpis(c)+baseline(c)+(c.unit==='bps'?costnote(c):'')+venuesLine(c)+'<canvas id="cv_'+name+'"></canvas>'+confLine(c)+rowsTable(c):'<div class=empty>No resolved trades yet.</div>'}
    <div class=risk>🔒 method, parameters &amp; research are private — <a href="/admin" style="color:var(--live)">admin</a> for the full record.</div>`;
   if(c.n&&c.equity){
    const ctx=document.getElementById('cv_'+name);

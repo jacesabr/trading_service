@@ -151,6 +151,47 @@ def record_trade(signal_id, symbol, side, entry, stop, target, ts=None):
                     stop, target, None, "", None, None, None])
 
 
+def record_signals_trades(items):
+    """Bulk insert (signal + trade) pairs over ONE connection — orders of
+    magnitude faster than per-row record_signal/record_trade against Neon.
+    items: dicts with strategy,symbol,timeframe,direction,rule,detail,side,
+    entry,stop,target,ts. Returns count inserted."""
+    if not items:
+        return 0
+    c = conn(); cur = c.cursor(); n = 0
+    sig_sql = (f"INSERT INTO signals(ts,strategy,symbol,timeframe,direction,"
+               f"rule,mode,detail) VALUES({','.join([PH]*8)}){RETURN_ID}")
+    tr_sql = (f"INSERT INTO trades(signal_id,ts,symbol,side,entry,stop,target,"
+              f"exit,outcome,won,ret_bps,bars_held) VALUES({','.join([PH]*12)})")
+    for it in items:
+        ts = it.get("ts") or int(time.time())
+        cur.execute(sig_sql, (ts, it["strategy"], it["symbol"],
+                              it.get("timeframe", "5m"), it["direction"],
+                              it.get("rule", ""), it.get("mode", "paper"),
+                              json.dumps(it.get("detail") or {})))
+        sid = cur.fetchone()["id"] if IS_PG else cur.lastrowid
+        cur.execute(tr_sql, (sid, ts, it["symbol"], it["side"], it["entry"],
+                             it.get("stop"), it.get("target"), None, "",
+                             None, None, None))
+        n += 1
+    c.commit(); cur.close(); c.close()
+    return n
+
+
+def resolve_trades_batch(updates):
+    """Bulk-resolve trades over ONE connection.
+    updates: (exit_price, outcome, won, ret_bps, bars_held, trade_id) tuples."""
+    if not updates:
+        return 0
+    c = conn(); cur = c.cursor()
+    cur.executemany(
+        f"UPDATE trades SET exit={PH},outcome={PH},won={PH},ret_bps={PH},"
+        f"bars_held={PH} WHERE id={PH}",
+        [(e, o, int(w), r, b, i) for (e, o, w, r, b, i) in updates])
+    c.commit(); cur.close(); c.close()
+    return len(updates)
+
+
 def resolve_trade(trade_id, exit_price, outcome, won, ret_bps, bars_held):
     c = conn(); cur = c.cursor()
     cur.execute(f"UPDATE trades SET exit={PH},outcome={PH},won={PH},ret_bps={PH},"
