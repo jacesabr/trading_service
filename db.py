@@ -66,6 +66,19 @@ CREATE TABLE IF NOT EXISTS executions(
   entry DOUBLE PRECISION, stop DOUBLE PRECISION, target DOUBLE PRECISION,
   exit DOUBLE PRECISION, outcome TEXT, won INTEGER,
   ret_bps DOUBLE PRECISION, bars_held INTEGER, ref TEXT);
+CREATE TABLE IF NOT EXISTS experiments(
+  id {SERIAL},
+  ts BIGINT, strategy TEXT, kind TEXT, hypothesis TEXT,
+  manifest TEXT, config TEXT, result TEXT,
+  verdict TEXT, robust TEXT, by_who TEXT);
+CREATE TABLE IF NOT EXISTS strategy_versions(
+  id {SERIAL},
+  ts BIGINT, strategy TEXT, before_params TEXT, after_params TEXT,
+  reason TEXT, revalidation TEXT, by_who TEXT);
+CREATE TABLE IF NOT EXISTS lessons(
+  id {SERIAL},
+  ts BIGINT, idea TEXT, domain TEXT, verdict TEXT, evidence TEXT,
+  redo_bar TEXT, by_who TEXT);
 """
 # SQLite needs DOUBLE PRECISION -> REAL, BIGINT ok; it tolerates these but be safe:
 if not IS_PG:
@@ -76,6 +89,10 @@ INDEXES = [
     "CREATE INDEX IF NOT EXISTS ix_bet_sig ON bets(signal_id)",
     "CREATE INDEX IF NOT EXISTS ix_trade_sig ON trades(signal_id)",
     "CREATE INDEX IF NOT EXISTS ix_exec_sig ON executions(signal_id)",
+    "CREATE INDEX IF NOT EXISTS ix_exp_strat ON experiments(strategy)",
+    "CREATE INDEX IF NOT EXISTS ix_exp_ts ON experiments(ts)",
+    "CREATE INDEX IF NOT EXISTS ix_ver_strat ON strategy_versions(strategy)",
+    "CREATE INDEX IF NOT EXISTS ix_lesson_ts ON lessons(ts)",
 ]
 
 
@@ -226,6 +243,64 @@ def recent_bets(limit=400):
     return _rows("SELECT b.*, s.strategy FROM bets b JOIN signals s "
                  "ON b.signal_id=s.id WHERE b.outcome!='' "
                  f"ORDER BY b.ts DESC LIMIT {int(limit)}")
+
+
+# ---------------- R&D ledger (experiments / versions / lessons) -------------
+def _dump(x):
+    return x if isinstance(x, str) or x is None else json.dumps(x)
+
+
+def record_experiment(strategy, kind, hypothesis="", manifest=None, config=None,
+                      result=None, verdict="", robust=None, by_who="agent",
+                      ts=None):
+    """One research/backtest run. kind: leaktest|walkforward|gridsearch|backtest.
+    result/manifest/config/robust may be dicts (JSON-encoded here)."""
+    return _insert("experiments",
+                   ["ts", "strategy", "kind", "hypothesis", "manifest", "config",
+                    "result", "verdict", "robust", "by_who"],
+                   [ts or int(time.time()), strategy, kind, hypothesis,
+                    _dump(manifest), _dump(config), _dump(result), verdict,
+                    _dump(robust), by_who])
+
+
+def record_version(strategy, before_params, after_params, reason="",
+                   revalidation=None, by_who="agent", ts=None):
+    """A param tweak with its before/after and the re-validation result that
+    must pass before it can affect money."""
+    return _insert("strategy_versions",
+                   ["ts", "strategy", "before_params", "after_params", "reason",
+                    "revalidation", "by_who"],
+                   [ts or int(time.time()), strategy, _dump(before_params),
+                    _dump(after_params), reason, _dump(revalidation), by_who])
+
+
+def record_lesson(idea, domain="", verdict="rejected", evidence="", redo_bar="",
+                  by_who="agent", ts=None):
+    """The system's do-not-repeat memory: why an idea was rejected and the bar
+    that would justify revisiting it. Read first every research run."""
+    return _insert("lessons",
+                   ["ts", "idea", "domain", "verdict", "evidence", "redo_bar",
+                    "by_who"],
+                   [ts or int(time.time()), idea, domain, verdict, evidence,
+                    redo_bar, by_who])
+
+
+def experiments(strategy=None, limit=400):
+    w = f" WHERE strategy={PH}" if strategy else ""
+    args = (strategy,) if strategy else ()
+    return _rows(f"SELECT * FROM experiments{w} ORDER BY ts DESC "
+                 f"LIMIT {int(limit)}", args)
+
+
+def versions(strategy=None, limit=400):
+    w = f" WHERE strategy={PH}" if strategy else ""
+    args = (strategy,) if strategy else ()
+    return _rows(f"SELECT * FROM strategy_versions{w} ORDER BY ts DESC "
+                 f"LIMIT {int(limit)}", args)
+
+
+def lessons(limit=1000):
+    return _rows(f"SELECT * FROM lessons ORDER BY ts DESC LIMIT {int(limit)}")
 
 
 if __name__ == "__main__":

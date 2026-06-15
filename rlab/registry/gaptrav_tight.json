@@ -1,0 +1,17 @@
+{
+  "name": "gaptrav_tight",
+  "order": 4,
+  "domain": "crypto",
+  "kind": "bracket",
+  "lifecycle": "paper",
+  "data": {"adapter": "binance", "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT", "BNBUSDT"], "timeframe": "5m", "ltf": "1m"},
+  "signal": {"module": "strategies", "fn": "gaptrav_tight_open", "needs": "zones", "params": {"lookback": 100, "va": 0.70, "wick_frac": 0.0005}, "param_grid": {"wick_frac": [0.0002, 0.0005, 0.001]}},
+  "exec_model": "bracket_sltp",
+  "gate": {"min_resolved": 400, "live_within_pp": 2.0, "ev_z": 2.0},
+  "provenance": {
+    "created_by": "human",
+    "date": "2026-06-14",
+    "hypothesis": "gaptrav target with the stop just beyond the entry candle's wick raises RR (~68% win, breakeven ~55%). The most promising un-live-tested config.",
+    "research_refs": ["CLAUDE.md", "trade_backtest.py"]
+  }
+}

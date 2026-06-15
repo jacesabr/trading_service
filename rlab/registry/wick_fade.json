@@ -1,0 +1,18 @@
+{
+  "name": "wick_fade",
+  "order": 7,
+  "domain": "crypto",
+  "kind": "binary",
+  "lifecycle": "paper",
+  "role": "control",
+  "data": {"adapter": "binance", "symbols": ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "DOGEUSDT", "BNBUSDT"], "timeframe": "5m"},
+  "signal": {"module": "strategies", "fn": "wick_fade_signal", "window": 30, "params": {"body_max": 0.35, "wick_min": 0.55}, "param_grid": {"wick_min": [0.5, 0.55, 0.6, 0.65], "body_max": [0.3, 0.35, 0.4]}},
+  "exec_model": "spot_bps",
+  "gate": {"min_resolved": 400, "live_within_pp": 2.0, "ev_z": 2.0},
+  "provenance": {
+    "created_by": "human",
+    "date": "2026-06-14",
+    "hypothesis": "SETTLED-NEGATIVE: fading a candle's dominant wick is 45-48% on 1h close across geometries. Control to confirm no edge.",
+    "research_refs": ["CLAUDE.md#settled-negative"]
+  }
+}

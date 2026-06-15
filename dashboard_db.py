@@ -18,12 +18,43 @@ import os
 import time
 
 import numpy as np
-from flask import Flask, jsonify, Response
+from flask import Flask, jsonify, Response, request
 
 import db
-import strategies as S
+from rlab import registry
 
 SIZE_USD = float(os.environ.get("SIZE_USD", "100"))
+
+# Public payloads expose RESULTS + identity only. Everything that reveals HOW an
+# edge works or how it was found (method/risk text, signal params/rules, the
+# promotion gate, provenance/hypothesis/research refs, the experiment ledger) is
+# admin-only — gated by ADMIN_PASSWORD. The track record itself (hit rate, equity,
+# recent fills, entry prices) IS public: it is the verifiable credibility.
+PUBLIC_KEYS = {
+    "label", "status", "kind", "venue", "symbols", "domain", "lifecycle",
+    "role", "pending", "last_age_min", "n", "hit", "unit", "equity", "exp_bps",
+    "net_bps", "ev", "avg_entry", "rw_base", "edge_pp", "recent", "venues",
+    "spread_bps", "spread_n", "fee_bps", "cal",
+}
+
+
+def _public(card):
+    return {k: v for k, v in card.items() if k in PUBLIC_KEYS}
+
+
+def _admin_ok():
+    """HTTP Basic gate. Returns (True, None) if authorized, else (False, resp).
+    If ADMIN_PASSWORD is unset, admin endpoints are disabled (not wide open)."""
+    pw = os.environ.get("ADMIN_PASSWORD")
+    if not pw:
+        return False, (jsonify({"error": "admin not configured"}), 503)
+    auth = request.authorization
+    user = os.environ.get("ADMIN_USER", "admin")
+    if not auth or auth.username != user or auth.password != pw:
+        return False, Response(
+            "admin login required", 401,
+            {"WWW-Authenticate": 'Basic realm="strategy-lab admin"'})
+    return True, None
 # Real cost model for spot paper strategies = measured spread (per trade, from
 # Binance book at signal time) + a transparent round-trip fee. FEE_BPS is the
 # ONLY assumption and it's tunable: default 4 bps round-trip ≈ 2 bps/side, a
@@ -50,8 +81,9 @@ def _age_min(ts, now):
     return round((now - int(ts)) / 60, 1) if ts else None
 
 
-@app.route("/api/stats")
-def stats():
+def _build_cards():
+    """Full (admin-grade) card per strategy: results + identity + the private
+    HOW (method/risk/signal/gate/provenance). Public route redacts via _public."""
     db.init()
     now = int(time.time())
     bets = db.recent_bets(800)
@@ -60,11 +92,17 @@ def stats():
     act = db.activity()
 
     out = {"last_update": now, "strategies": {}}
-    for name, meta in S.STRATEGIES.items():
+    for name, meta in registry.registry().items():
         a = act.get(name, {})
-        card = dict(label=meta["label"], status=meta["status"], kind=meta["kind"],
-                    venue=meta["venue"], symbols=meta["symbols"],
-                    method=meta["method"], risk=meta["risk"],
+        card = dict(label=meta.get("label", name), status=meta.get("status", ""),
+                    kind=meta.get("kind", ""), venue=meta.get("venue", ""),
+                    symbols=meta.get("symbols", ""), domain=meta.get("domain", ""),
+                    lifecycle=meta.get("lifecycle", ""), role=meta.get("role", ""),
+                    method=meta.get("method", ""), risk=meta.get("risk", ""),
+                    # admin-only HOW + provenance (redacted from public):
+                    signal=meta.get("signal", {}), gate=meta.get("gate", {}),
+                    exec_model=meta.get("exec_model", ""),
+                    provenance=meta.get("provenance", {}),
                     pending=a.get("pending", 0),
                     last_age_min=_age_min(a.get("last_ts"), now),
                     n=0, recent=[])
@@ -147,7 +185,29 @@ def stats():
                                       - FEE_BPS, 1))
                 for v, rs in vmap.items()}
         out["strategies"][name] = card
-    return jsonify(out)
+    return out
+
+
+@app.route("/api/stats")
+def stats():
+    """PUBLIC — results + identity only; the HOW is redacted."""
+    full = _build_cards()
+    full["strategies"] = {n: _public(c) for n, c in full["strategies"].items()}
+    return jsonify(full)
+
+
+@app.route("/api/admin/stats")
+def admin_stats():
+    """ADMIN — full cards + experiment ledger + version history + lessons."""
+    ok, resp = _admin_ok()
+    if not ok:
+        return resp
+    full = _build_cards()
+    for name, card in full["strategies"].items():
+        card["experiments"] = db.experiments(name, limit=10)
+        card["versions"] = db.versions(name, limit=10)
+    full["lessons"] = db.lessons(limit=200)
+    return jsonify(full)
 
 
 HTML = r"""<!doctype html><meta charset=utf-8>
@@ -252,9 +312,9 @@ async function tick(){
    <div class=status><span class=dot style="background:${alive?'var(--live)':'var(--dim)'}"></span>
      ${c.last_age_min!=null?('last signal '+f(c.last_age_min,0)+'m ago'):'no signals yet'}
      · ${c.pending} pending${armed?' · armed':''} · ${c.symbols}</div>
-   <div class=method>${c.method}</div>
+   <div class=method>${c.domain||''} · ${c.kind||''} · ${c.venue||''}</div>
    ${c.n?kpis(c)+baseline(c)+(c.unit==='bps'?costnote(c):'')+venuesLine(c)+'<canvas id="cv_'+name+'"></canvas>'+rowsTable(c):'<div class=empty>No resolved trades yet.</div>'}
-   <div class=risk>${c.risk}</div>`;
+   <div class=risk>🔒 method, parameters &amp; research are private — <a href="/admin" style="color:var(--live)">admin</a> for the full record.</div>`;
   if(c.n&&c.equity){
    const ctx=document.getElementById('cv_'+name);
    const col=c.equity[c.equity.length-1]>=0?'#3FB68B':'#E0556B';
@@ -278,6 +338,72 @@ tick();setInterval(tick,30000);
 @app.route("/")
 def index():
     return Response(HTML, mimetype="text/html")
+
+
+ADMIN_HTML = r"""<!doctype html><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>Strategy Lab — Admin</title>
+<style>
+body{background:#0B1220;color:#D7E0EF;font:14px/1.5 ui-monospace,monospace;padding:18px;max-width:1100px;margin:auto}
+h1{font-size:16px}h2{font-size:14px;color:#F5A623;border-bottom:1px solid #1E2A44;padding-bottom:4px;margin-top:26px}
+.s{background:#121B2E;border:1px solid #1E2A44;border-radius:8px;padding:14px;margin:12px 0}
+.k{color:#8593AC}.v{color:#D7E0EF}.pos{color:#3FB68B}.neg{color:#E0556B}
+pre{white-space:pre-wrap;word-break:break-word;background:#0B1220;border:1px solid #1E2A44;padding:8px;border-radius:6px;font-size:12px}
+a{color:#F5A623}.row{margin:3px 0}
+table{width:100%;border-collapse:collapse;font-size:12px}td,th{text-align:left;padding:2px 6px;border-bottom:1px solid #1E2A44}
+</style>
+<h1>STRATEGY LAB — ADMIN <span class=k id=sub></span></h1>
+<div id=app>authenticating…</div>
+<script>
+const pct=x=>x==null?'—':(100*x).toFixed(1)+'%';
+async function load(){
+ const r=await fetch('/api/admin/stats');
+ if(r.status===401){document.getElementById('app').innerHTML='Login cancelled. <a href="/admin">retry</a>';return;}
+ if(r.status===503){document.getElementById('app').innerHTML='Admin not configured (set ADMIN_PASSWORD).';return;}
+ const s=await r.json();
+ document.getElementById('sub').textContent='· updated '+new Date(s.last_update*1000).toLocaleString();
+ let h='';
+ for(const [n,c] of Object.entries(s.strategies)){
+  const p=c.provenance||{};
+  h+=`<div class=s><h2>${c.label} <span class=k>[${c.lifecycle}${c.role?'/'+c.role:''}]</span></h2>
+   <div class=row><span class=k>status</span> ${c.status} · ${c.domain} · ${c.kind} · ${c.venue} · exec=${c.exec_model}</div>
+   <div class=row><span class=k>results</span> n=${c.n||0} hit=${pct(c.hit)} ${c.unit==='$'?('EV/bet '+pct(c.ev)):('net '+(c.net_bps??'—')+'bps')}</div>
+   <div class=row><span class=k>method (how it's used)</span> ${c.method||'—'}</div>
+   <div class=row><span class=k>risk</span> ${c.risk||'—'}</div>
+   <div class=row><span class=k>how it was found</span> ${p.hypothesis||'—'} <span class=k>(${(p.created_by||'?')}, ${(p.date||'?')})</span></div>
+   <div class=row><span class=k>research refs</span> ${(p.research_refs||[]).join(', ')||'—'}</div>
+   <div class=row><span class=k>signal</span></div><pre>${JSON.stringify(c.signal,null,1)}</pre>
+   <div class=row><span class=k>gate</span> ${JSON.stringify(c.gate)}</div>
+   ${(c.experiments&&c.experiments.length)?'<div class=row><span class=k>experiments</span></div>'+expTable(c.experiments):''}
+   ${(c.versions&&c.versions.length)?'<div class=row><span class=k>param history</span> '+c.versions.length+' change(s)</div>':''}
+  </div>`;
+ }
+ h+='<h2>LESSONS — do not re-litigate</h2>'+(s.lessons&&s.lessons.length?lessonsTable(s.lessons):'<div class=k>none yet</div>');
+ document.getElementById('app').innerHTML=h;
+}
+function expTable(e){return '<table><tr><th>date</th><th>kind</th><th>verdict</th></tr>'+
+  e.map(x=>`<tr><td>${new Date(x.ts*1000).toLocaleDateString()}</td><td>${x.kind}</td><td>${x.verdict||''}</td></tr>`).join('')+'</table>';}
+function lessonsTable(l){return '<table><tr><th>date</th><th>verdict</th><th>idea</th><th>revisit if</th></tr>'+
+  l.map(x=>`<tr><td>${new Date(x.ts*1000).toLocaleDateString()}</td><td>${x.verdict}</td><td>${x.idea}</td><td>${x.redo_bar||''}</td></tr>`).join('')+'</table>';}
+load();
+</script>"""
+
+
+@app.route("/admin")
+def admin_page():
+    return Response(ADMIN_HTML, mimetype="text/html")
+
+
+@app.route("/docs")
+def docs_page():
+    """The living infrastructure document, served from disk so edits show live.
+    Maintained by the daily agent — see the maintenance contract inside it."""
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "docs", "INFRA.html")
+    if not os.path.exists(path):
+        return Response("INFRA.html missing", 404)
+    with open(path, encoding="utf-8") as f:
+        return Response(f.read(), mimetype="text/html")
 
 
 if __name__ == "__main__":
