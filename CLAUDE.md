@@ -1,13 +1,17 @@
 # CLAUDE.md — Project guide for Claude Code
 
-Polymarket/forex signal research + live tracking system. Read this first, then
-SYSTEM.md for architecture and STRATEGY.md for the validated edges and the
-error audit.
+Autonomous strategy research lab + live paper-tracking system. Read this first,
+then **docs/INFRA.html** for the living architecture, **STRATEGY.md** for the
+error audit, and **daily_run.md** for the daily research procedure.
 
 ## What this project is
-Backtests, validates, and live-tracks short-horizon BTC/ETH trading signals.
-Two markets: Polymarket 5m binary (close direction) and forex/CFD (SL/TP).
-Everything resolves on Binance candles — the same venue Polymarket settles on.
+A self-operating lab that discovers, validates, paper-tracks, and (gated, off)
+could live-trade short-horizon signals across many markets: crypto (Binance),
+prediction markets (Kalshi — the live-API venue replacing Polymarket; Polymarket
+paper kept), equities (Alpaca paper), with options/weather as future domains.
+A strategy is a manifest (`rlab/registry/*.json`) + a signal fn; the lab CLI
+(`lab.py`) creates/validates/promotes/retires them; the harness (`rlab/harness.py`)
+enforces NO-LOOKAHEAD. Everything is **paper** (money floor off by design).
 
 ## The cardinal rule of this codebase: NO LOOKAHEAD
 Every signal must be computable from data available BEFORE the outcome bar.
@@ -35,22 +39,33 @@ how good the in-sample number looks.
   whether confluence beats either parent. Separate DB strategy for clean numbers.
 
 ## Key files
-- strategies.py — both signals, ONE import. Backtests + live call these. Single
-  source of truth; if you change signal logic, change it HERE only.
-- db.py — SQLite (signals/bets/trades). record_*/resolve_*/stats/open_positions.
-- runner.py — live loop (5m boundary -> signal -> DB -> resolve).
-- dashboard_db.py — monitor on :8050, reads DB.
-- backtest entry points: gap_traversal.py, indicator_battery.py, mr_5m.py,
-  gap_next5m.py (the leak test), confluence_search.py.
-- executor.py (Polymarket CLOB) / forex_oanda.py (OANDA practice) — live order
-  layers, both with confirm_live=True gates and size caps. Don't loosen rails.
+- **lab.py** — the guarded CLI (list/status/new/leaktest/backtest/walkforward/
+  gridsearch/tweak/promote/retire/lesson). The single interface for operating the
+  lab; lifecycle guards live here.
+- **rlab/** — `registry.py` (manifest loader + lifecycle + legacy merge),
+  `harness.py` (leak test / walk-forward / grid — enforces NO-LOOKAHEAD),
+  `registry/*.json` (one manifest per strategy), `impl/*.py` (agent-authored sigs).
+- strategies.py — the original validated signal fns (single source for the
+  migrated crypto strategies; manifests point here).
+- db.py — Neon/SQLite store: signals/bets/trades/executions + experiments/
+  strategy_versions/lessons. record_*/resolve_*/record_signals_trades (bulk)/stats.
+- runner.py — crypto 5m live loop. daily.py — every-2h Kalshi+equity collect/resolve.
+- kalshi_paper.py + adapters/ (kalshi_client, data/kalshi, data/alpaca) — real-API
+  paper engines. equity_paper.py — strategy battery on Alpaca equities × timeframes.
+- dashboard_db.py — public results (sorted by P&L) + `/admin` (auth) + `/docs`.
+- executor.py / forex_oanda.py / kalshi_paper.place_live — live order layers,
+  all gated (LIVE_BUDGET_ARMED). Don't loosen rails.
+- LEGACY one-off backtests (superseded by lab.py/harness, kept for reference):
+  gap_next5m.py, backtest.py, trade_backtest.py, mr_5m.py. Still-imported helpers:
+  gap_traversal.py, indicator_battery.py, zone_breaks.py, confluence_search.py,
+  bias_test.py (do not delete — strategies.py depends on them).
 
 ## Data
 `python3 data.py SYMBOL CHARTTF LTF START_YM END_YM` -> SYMBOL_TF.csv (Binance
 dumps, no API key). Zones need a lower TF than the chart (5m zones need 1m).
 
 ## Conventions
-- Don't add a dependency without noting it in SYSTEM.md deploy steps.
+- Don't add a dependency without noting it in DEPLOY.md + requirements.txt.
 - bps = basis points of price return; "expectancy" is always net-of-nothing
   gross unless a fee/spread is named. Polymarket EV is per-$1-staked.
 - Sizes: Polymarket min 5 shares (not $5); dollar cost = 5 * price. Configurable
@@ -59,12 +74,14 @@ dumps, no API key). Zones need a lower TF than the chart (5m zones need 1m).
 
 ## Safe local commands (no live trading, no keys needed)
 ```bash
-python3 db.py                         # init/verify DB
-python3 strategies.py                 # signal smoke test on stored data
-python3 gap_traversal.py BTCUSDT 1h 5m # a backtest
-python3 gap_next5m.py BTCUSDT         # the leak test (run for any new idea)
-python3 runner.py --probe            # connectivity check (needs Binance reach)
+python db.py                          # init/verify DB
+python lab.py list                    # lifecycle + P&L of every strategy
+python lab.py backtest meanrev        # leak-safe backtest via the harness
+python lab.py leaktest <name>         # the leak test (run for any new idea)
+python daily.py                       # resolve + collect Kalshi & equities (paper)
+python runner.py --probe              # crypto connectivity check
 ```
+See **daily_run.md** for the full daily research procedure.
 
 ## When asked to "improve the strategy"
 1. Form the rule. 2. Write its leak test. 3. Backtest with TRAIN/VAL/TEST.
@@ -90,8 +107,15 @@ time windows on BOTH symbols, not a single test-split number.
 - **Wick-rejection fade**: DEAD. 45-48% on hourly close across all geometries.
 - **Zone-break bias state**: DEAD. 50.4% on hourly close.
 
-## What actually survived everything
-- meanrev (RSI/MFI 5m -> Polymarket binary): 54-57% leak-free on close. The one
-  live-worthy edge. Thin; needs live confirmation of entry prices vs hit rate.
-- gaptrav k=1 (nearest target): real ~68% touch rate but ~breakeven after costs.
-  Kept as a PAPER experiment only — watch for live divergence, do not fund.
+## What actually survived everything (backtest) — and the LIVE update
+- meanrev (RSI/MFI 5m -> Polymarket binary): 54-57% leak-free on close in backtest.
+- gaptrav k=1: real ~68% touch rate, ~breakeven after costs in backtest.
+
+**LIVE PAPER REFUTED THE BACKTEST (2026-06-15).** meanrev live = **45.9% over 109
+Polymarket paper bets** (−$2080), the worst on the board → **DEMOTED**
+live_candidate→paper. Strategies the audit dismissed did better; **far_targets**
+(declared "settled-dead") was net-positive in live paper, and zone trading is
+strongest on **higher timeframes** (gaptrav/far_targets best on 1h on equities).
+Lesson, logged in the ledger: trust live paper over backtest ranking. The numbers
+are in the DB / dashboard; the `lessons` table records why. This is the system
+working — the paper gate meant zero real money was ever at risk.

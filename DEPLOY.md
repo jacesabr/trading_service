@@ -1,68 +1,60 @@
-# Deploy to Render + Neon
+# DEPLOY.md — deployment & runbook
 
-## Overview
-- **Neon** = the Postgres database (free tier, serverless). Holds signals/bets/trades.
-- **Render** = hosting. Two services:
-  - `signal-dashboard` (web) — the monitor UI + API, runs under gunicorn.
-  - `signal-runner` (worker) — the 5m live loop writing to the DB.
+Single source for running this locally and in prod. Architecture lives in
+[docs/INFRA.html](docs/INFRA.html); the daily research procedure in
+[daily_run.md](daily_run.md). Secrets are referenced by NAME only — real values
+live in the gitignored `.env` / `secrets/` and in each Render service's env.
 
-`db.py` auto-detects: if `DATABASE_URL` is a postgres:// string it uses Neon,
-otherwise it falls back to a local SQLite file. Same code locally and in prod.
+## Local dev
+```bash
+python -m venv venv && source venv/bin/activate    # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+python db.py                       # init/verify the store (SQLite if no DATABASE_URL)
+python lab.py list                 # lifecycle + P&L of every strategy
+python daily.py                    # resolve + collect Kalshi & equities (paper)
+python runner.py --probe           # crypto connectivity check
+```
+`.env` (gitignored) holds local secrets: `KALSHI_API_KEY_ID`,
+`KALSHI_PRIVATE_KEY_PATH` (→ `secrets/kalshi_rsa.pem`), `KALSHI_API_BASE`,
+`ALPACA_KEY`, `ALPACA_SECRET`. Set `DATABASE_URL` to use prod Neon instead of local
+SQLite. Crypto data: `python data.py BTCUSDT 5m 1m 2025-06 2026-05`.
 
-## 1. Neon (database)
-1. neon.tech -> new project. Pick a region near your Render region.
-2. Copy the **pooled** connection string (Dashboard -> Connection Details ->
-   "Pooled connection"). It looks like:
-   `postgresql://user:pass@ep-xxx-pooler.region.aws.neon.tech/neondb?sslmode=require`
-   Use the POOLED string — the runner + web + analyst open separate connections.
-3. That string is your `DATABASE_URL`.
+## Prod topology (Render + Neon, GitHub `jacesabr/trading_service` @ master)
+| Service | ID | Role |
+|---|---|---|
+| web `signal-dashboard` | `srv-d8ncr4k8aovs73ab7bb0` | `gunicorn dashboard_db:app` — https://signal-dashboard-3rzj.onrender.com |
+| worker `signal-runner` | `srv-d8ncrf3tqb8s73d1q1rg` | `python runner.py` — crypto 5m loop (frankfurt; Binance blocks US IPs) |
+| cron `signal-daily` | `crn-d8o1svjeo5us738btld0` | `python daily.py` every 2h (`30 */2 * * *`) — Kalshi + equities |
+| DB | Neon `withered-wind-02493492` / `neondb` | `DATABASE_URL` (pooled, us-west-2) |
 
-## 2. Render (hosting)
-Push this folder to a GitHub repo (the .gitignore keeps data/secrets/db out).
-Then Render -> New -> Blueprint -> select the repo. render.yaml provisions both
-services. In each service's Environment, set:
-  - `DATABASE_URL`     = the Neon pooled string  (both web + worker)
-  - `NVIDIA_API_KEY`   = NIM key                  (worker, for analyst/assist)
-  - `ANTHROPIC_API_KEY`= Claude key               (worker, for daily Fable report)
-First boot runs `db.init()` automatically (web service on import, runner on start).
+`db.py` auto-detects backend: `postgresql://…` → Neon, else local SQLite. Render
+workspace: jae's (owner `tea-d8e1tae8bjmc73am2g10`); API auth via the
+`RENDER_API_KEY` env, header `Authorization: Bearer`.
 
-### Important: the worker plan is paid
-Render runs background workers only on a paid plan (~$7/mo). Two options:
-  - **A (recommended):** pay for the worker so the 5m loop runs 24/7.
-  - **B (free):** drop the worker; instead trigger one cycle on a schedule with
-    Render **Cron Jobs** (free) running `python runner.py --once` every 5 min:
-    `*/5 * * * *`. Slightly less precise on the boundary but free. The dashboard
-    web service stays on the free tier either way.
+### Env vars per service (names only — set in the Render dashboard)
+- **dashboard**: `DATABASE_URL`, `ADMIN_USER`, `ADMIN_PASSWORD` (gates `/admin`; 503 if unset), `SIZE_USD`, `FEE_BPS`.
+- **worker**: `DATABASE_URL`, `NVIDIA_API_KEY`, `ALPACA_KEY`, `ALPACA_SECRET`, `PYTHONUNBUFFERED`.
+- **cron**: `DATABASE_URL`, `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY` (PEM contents), `KALSHI_API_BASE`, `ALPACA_KEY`, `ALPACA_SECRET`, `PYTHONUNBUFFERED`.
 
-### Binance reachability from Render
-Render's US regions may hit Binance geo-blocks (HTTP 451). Use **Frankfurt** or
-**Singapore** region for the worker/cron, or point the data fetch at
-`data.binance.vision` (already the fallback used by data.py). Test after deploy
-with the runner logs (look for `binance error`).
+### Deploying a change
+Auto-deploy is **OFF** (Render pulls the public repo but there's no GitHub
+webhook). After `git push origin master`, trigger each affected service:
+```bash
+curl -s -X POST -H "Authorization: Bearer $RENDER_API_KEY" \
+  "https://api.render.com/v1/services/<service-id>/deploys" -d '{"clearCache":"do_not_clear"}'
+```
+Redeploy the **dashboard** to pick up new strategy manifests (`rlab/registry/*.json`)
+so new cards appear. Binance geo-block (HTTP 451) on US regions → keep the worker
+in **frankfurt** (or use `data.binance.vision`, already data.py's source).
 
-## 3. Verify
-- Web service URL (Render gives you one) -> the dashboard loads, panels show
-  "No bets yet" until the runner logs the first resolved window.
-- Worker logs -> a line per 5m cycle; `BET ...` / `TRADE ...` when signals fire.
-- DB sanity: `psql "$DATABASE_URL" -c "select strategy,count(*) from signals
-  join ... group by 1"` or just watch the dashboard counts climb.
+## DB schema (created on first `db.init()`)
+`signals · bets · trades · executions · experiments · strategy_versions · lessons`
 
-## 4. Secrets hygiene
-- Never commit `.env`, `*.db`, `*.csv` (covered by .gitignore).
-- Polymarket/OANDA live keys (`POLY_PRIVATE_KEY`, `OANDA_TOKEN`) go in Render
-  env vars too, but ONLY when you flip from paper to live — and on a dedicated
-  wallet/demo account per the rails in executor.py / forex_oanda.py.
+## Dependencies
+`pandas, numpy, flask, gunicorn, psycopg2-binary, scikit-learn, cryptography`
+(`requirements.txt`). Add new deps there **and** note them here.
 
-## 5. Local dev still works
-No DATABASE_URL -> SQLite. `python3 runner.py --probe`, `python3 dashboard_db.py`
-(serves on PORT or 8050). Identical behavior, file-based DB.
-
-## Files Render/Neon use
-| file | role |
-|---|---|
-| render.yaml | provisions web + worker |
-| Procfile | fallback process defs (if not using the blueprint) |
-| requirements.txt | gunicorn + psycopg2 + the stack |
-| db.py | Neon/SQLite dual backend |
-| dashboard_db.py | gunicorn entry: `dashboard_db:app` |
-| runner.py | worker / cron entry (`--once` for cron) |
+## Live trading (P5, not enabled)
+All strategies are paper. Real orders refuse unless a human sets
+`LIVE_BUDGET_ARMED=1` plus caps + kill switch (rails in `executor.py` /
+`forex_oanda.py` / `kalshi_paper.place_live`) — by design, off.
