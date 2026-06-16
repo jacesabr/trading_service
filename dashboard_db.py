@@ -36,6 +36,7 @@ PUBLIC_KEYS = {
     "net_bps", "ev", "avg_entry", "rw_base", "edge_pp", "recent", "venues",
     "spread_bps", "spread_n", "fee_bps", "cal",
     "platform", "mode", "pnl_total", "rank_score", "confidence",
+    "group", "real",
 }
 
 
@@ -222,12 +223,33 @@ def _build_cards():
                         net_bps=round(float(np.mean([r["ret_bps"] for r in rs]))
                                       - FEE_BPS, 1))
                 for v, rs in vmap.items()}
+        # REAL broker orders (alpaca_exec): actual placed + filled demo trades
+        # (ref='order:<id>'), as opposed to quote-cross snapshots. A strategy
+        # with these is a live system "making real demo trades" -> it floats to
+        # the top group. ret_bps here is the realized round-trip (the real spread
+        # is already in the fills), so it IS the net — no extra cost deducted.
+        real = [e for e in ex if (e.get("ref") or "").startswith("order:")]
+        if real:
+            rr = np.array([e["ret_bps"] for e in real], float)
+            rw = np.array([e["won"] for e in real], float)
+            card["real"] = dict(n=len(real), venue=real[0]["venue"],
+                                hit=round(float(rw.mean()), 4),
+                                net_bps=round(float(rr.mean()), 1),
+                                pnl=round(float(rr.sum()), 1))
+            card["rank_score"] = round(float(rr.mean()), 2)   # rank live by REAL P&L
+        card["group"] = "live" if real else "paper"
         card["confidence"] = _why(meta, card)
         out["strategies"][name] = card
-    # sort most -> least profitable (per-trade net edge, bps-equivalent)
-    out["strategies"] = dict(sorted(out["strategies"].items(),
-                                    key=lambda kv: kv[1].get("rank_score", -1e12),
-                                    reverse=True))
+    # Systems making REAL broker demo trades (real fills) float to the TOP;
+    # within each group, sort most -> least profitable.
+    items = list(out["strategies"].items())
+    key = lambda kv: kv[1].get("rank_score", -1e12)
+    live = sorted([kv for kv in items if kv[1].get("group") == "live"],
+                  key=key, reverse=True)
+    paper = sorted([kv for kv in items if kv[1].get("group") != "live"],
+                   key=key, reverse=True)
+    out["strategies"] = dict(live + paper)
+    out["live_count"] = len(live)
     return out
 
 
@@ -290,10 +312,21 @@ details{margin-top:8px}summary{font-size:11px;color:var(--live);cursor:pointer;f
 table{width:100%;border-collapse:collapse;font:11px var(--mono);margin-top:6px}
 th,td{text-align:right;padding:2px 4px;border-bottom:1px solid var(--line)}
 th:first-child,td:first-child{text-align:left}
+.sec{font:600 13px var(--mono);text-transform:uppercase;letter-spacing:.06em;margin:22px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--line);color:var(--ink)}
+.sec small{font-weight:400;text-transform:none;letter-spacing:0;color:var(--dim);font-size:11px}
+#sec_live{color:var(--up)}
+.livedot{width:9px;height:9px;border-radius:50%;background:var(--up);display:inline-block;margin-right:8px;box-shadow:0 0 0 0 rgba(63,182,139,.7);animation:pulse 2s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(63,182,139,.6)}70%{box-shadow:0 0 0 7px rgba(63,182,139,0)}100%{box-shadow:0 0 0 0 rgba(63,182,139,0)}}
+.panel.livecard{border-color:var(--up);box-shadow:0 0 0 1px rgba(63,182,139,.25)}
+.real{font:600 12px var(--mono);background:#0f2018;border-left:2px solid var(--up);padding:7px 10px;border-radius:0 6px 6px 0;margin:8px 0;color:var(--ink)}
+.real .lbl{color:var(--up);letter-spacing:.04em}
 </style>
 <h1>STRATEGY TRACKER</h1>
 <div class=sub id=sub>loading…</div>
-<div class=grid id=grid></div>
+<h2 class=sec id=sec_live><span class="livedot"></span>LIVE — real broker orders <small>· actual filled demo trades (Alpaca paper), most → least profitable</small></h2>
+<div class=grid id=grid_live></div>
+<h2 class=sec id=sec_paper>PAPER — simulation <small>· resolved from real bars, no orders placed · most → least profitable</small></h2>
+<div class=grid id=grid_paper></div>
 <script>
 const pct=x=>x==null?'—':(100*x).toFixed(1)+'%';
 const f=(x,d=2)=>x==null?'—':Number(x).toFixed(d);
@@ -342,6 +375,13 @@ function venuesLine(c){
    `<b style="color:var(--ink)">${v}</b> ${pct(x.hit)} <span class="${x.net_bps>0?'pos':'neg'}">${x.net_bps>0?'+':''}${x.net_bps}bps</span> (${x.n})`);
  return `<div class=status>real venues: ${parts.join(' · ')}</div>`;
 }
+function realLine(c){
+ if(!c.real) return '';
+ const x=c.real, p=x.net_bps>=0;
+ return `<div class=real><span class=lbl>● REAL ${(x.venue||'').toUpperCase()} FILLS</span> — ${x.n} round-trip${x.n==1?'':'s'} ·
+   hit ${pct(x.hit)} · <span class="${p?'pos':'neg'}">${p?'+':''}${x.net_bps} bps/trade</span> ·
+   P&amp;L <span class="${x.pnl>=0?'pos':'neg'}">${x.pnl>=0?'+':''}${x.pnl} bps</span></div>`;
+}
 function costnote(c){
  const sp = c.spread_bps==null ? 'measuring…'
    : (c.spread_bps+' bps live ('+c.spread_n+' trades)');
@@ -357,10 +397,13 @@ function baseline(c){
 async function tick(){
  const s=await(await fetch('/api/stats')).json();
  document.getElementById('sub').textContent='updated '+new Date(s.last_update*1000).toLocaleTimeString();
- const grid=document.getElementById('grid');
+ const gl=document.getElementById('grid_live'), gp=document.getElementById('grid_paper');
+ let nlive=0;
  for(const [name,c] of Object.entries(s.strategies)){
+  const live=c.group==='live'; if(live) nlive++;
   let p=document.getElementById('p_'+name);
-  if(!p){p=document.createElement('div');p.className='panel';p.id='p_'+name;grid.appendChild(p);}
+  if(!p){p=document.createElement('div');p.id='p_'+name;}
+  p.className='panel'+(live?' livecard':'');
   const alive=c.last_age_min!=null&&c.last_age_min<180;
   const armed=c.pending>0;
   p.innerHTML=`
@@ -371,8 +414,10 @@ async function tick(){
    <div class=method><b style="color:var(--ink)">${c.platform||c.venue||''}</b>
      <span class=paper>${(c.mode||'paper').toUpperCase()}</span>
      · ${c.domain||''} · ${c.kind||''}</div>
+   ${realLine(c)}
    ${c.n?pnlLine(c)+kpis(c)+baseline(c)+(c.unit==='bps'?costnote(c):'')+venuesLine(c)+'<canvas id="cv_'+name+'"></canvas>'+confLine(c)+rowsTable(c):'<div class=empty>No resolved trades yet.</div>'}
    <div class=risk>🔒 method, parameters &amp; research are private — <a href="/admin" style="color:var(--live)">admin</a> for the full record.</div>`;
+  (live?gl:gp).appendChild(p);    // route + keep profit order (API order)
   if(c.n&&c.equity){
    const ctx=document.getElementById('cv_'+name);
    const col=c.equity[c.equity.length-1]>=0?'#3FB68B':'#E0556B';
@@ -388,6 +433,8 @@ async function tick(){
        scales:{x:{display:false},y:{grid:{color:'#1E2A44'}}}}});
   }
  }
+ document.getElementById('sec_live').style.display=nlive?'':'none';
+ document.getElementById('grid_live').style.display=nlive?'':'none';
 }
 tick();setInterval(tick,30000);
 </script>"""
