@@ -104,7 +104,10 @@ def klines_1m(binance_sym, start_ms, end_ms):
 # ─── Router ───────────────────────────────────────────────────────────────────
 _BASE_ALIASES = {"XBT": "BTC", "SOLANA": "SOL", "BITCOIN": "BTC",
                  "ETHEREUM": "ETH", "RIPPLE": "XRP", "LITECOIN": "LTC",
-                 "DOGECOIN": "DOGE"}
+                 "DOGECOIN": "DOGE",
+                 # gold → PAXG (tokenized gold ≈ 1oz spot) on Binance: lets XAUUSD
+                 # ideas run through binance_sim, no FX broker / KYC / geo needed.
+                 "XAU": "PAXG", "GOLD": "PAXG"}
 
 
 def route(symbol):
@@ -128,7 +131,7 @@ def route(symbol):
     supported = {"BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "ADA", "AVAX",
                  "LINK", "MATIC", "LTC", "DOT", "TRX", "ORDI", "NEAR", "APT",
                  "ARB", "OP", "SUI", "INJ", "TIA", "SEI", "PEPE", "WIF", "SHIB",
-                 "ATOM", "FIL", "RUNE", "AAVE", "UNI", "ETC", "BCH"}
+                 "ATOM", "FIL", "RUNE", "AAVE", "UNI", "ETC", "BCH", "PAXG"}
     if s in supported:
         return s + "USDT"
     return None
