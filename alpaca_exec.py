@@ -86,11 +86,13 @@ def _await_fill(oid, poll=ENTRY_POLL_S):
 
 def _open_order_exec(strat, binance_symbol):
     """True if an alpaca order-exec is already open for this (strategy, symbol)."""
+    # NB: parameterize the LIKE pattern — a literal % in the SQL is read as a
+    # psycopg2 placeholder on Postgres (per CLAUDE.md). SQLite is fine either way.
     rows = db._rows(
         "SELECT e.id FROM executions e JOIN signals s ON e.signal_id=s.id "
         f"WHERE e.venue='alpaca' AND e.outcome='' AND e.symbol={db.PH} "
-        f"AND s.strategy={db.PH} AND e.ref LIKE 'order:%'",
-        (binance_symbol, strat))
+        f"AND s.strategy={db.PH} AND e.ref LIKE {db.PH}",
+        (binance_symbol, strat, "order:%"))
     return bool(rows)
 
 
@@ -159,7 +161,7 @@ def close_due(now=None):
         return 0
     now = int(time.time()) if now is None else int(now)
     rows = db._rows("SELECT * FROM executions WHERE venue='alpaca' AND "
-                    "outcome='' AND ref LIKE 'order:%'")
+                    f"outcome='' AND ref LIKE {db.PH}", ("order:%",))
     n = 0
     for e in rows:
         age = now - int(e["ts"])
