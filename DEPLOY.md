@@ -34,7 +34,7 @@ workspace: jae's (owner `tea-d8e1tae8bjmc73am2g10`); API auth via the
 ### Env vars per service (names only — set in the Render dashboard)
 - **dashboard**: `DATABASE_URL`, `ADMIN_USER`, `ADMIN_PASSWORD` (gates `/admin`; 503 if unset), `SIZE_USD`, `FEE_BPS`.
 - **worker**: `DATABASE_URL`, `NVIDIA_API_KEY`, `ALPACA_KEY`, `ALPACA_SECRET`, `PYTHONUNBUFFERED`. **Real filled demo trades** (`alpaca_exec.py`): `ALPACA_PLACE_ORDERS=1` arms real Alpaca paper orders — long-crypto round-trips (buy on signal, sell to flatten next bar) recorded in `executions` with real fills + P&L. Allow-list `ALPACA_ORDER_STRATEGIES` (default `clv_fade`), `ALPACA_ORDER_NOTIONAL` (default 12, >$10 crypto floor), `ALPACA_MAX_HOLD_S` (default 1800 force-flatten). Self-closing + deduped, so safe to leave armed; unset → Phase-1 quote-cross sim. Money floor unaffected (paper account; real money still needs `LIVE_BUDGET_ARMED`).
-- **cron**: `DATABASE_URL`, `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY` (PEM contents), `KALSHI_API_BASE`, `ALPACA_KEY`, `ALPACA_SECRET`, `PYTHONUNBUFFERED`.
+- **cron**: `DATABASE_URL`, `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY` (PEM contents), `KALSHI_API_BASE`, `ALPACA_KEY`, `ALPACA_SECRET`, `PYTHONUNBUFFERED`. **Real equity bracket orders** (`equity_orders.py`): `ALPACA_EQUITY_ORDERS=1` arms real Alpaca paper bracket (OCO) orders for `ALPACA_EQUITY_STRATEGIES` (default `gaptrav_tight_eq_1h`), `ALPACA_EQUITY_QTY` (default 1). Broker holds the OCO exit (self-closing); placed on the latest live bar, fill at market open. Unset → sim only.
 
 ### Deploying a change
 Auto-deploy is **OFF** (Render pulls the public repo but there's no GitHub

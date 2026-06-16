@@ -41,14 +41,27 @@ def main():
     except Exception as e:
         out["equity"] = {"error": str(e)[:200]}
 
+    # --- REAL Alpaca equity bracket orders (broker-managed OCO, gated) ---
+    try:
+        import equity_orders
+        import equity_paper as eq
+        ores = equity_orders.resolve_open()
+        oplaced = eq.place_live_orders()
+        out["equity_orders"] = {"resolved": ores, "placed": oplaced}
+    except Exception as e:
+        out["equity_orders"] = {"error": str(e)[:200]}
+
     # --- summary line ---
-    k = out.get("kalshi", {}); e = out.get("equity", {})
+    k = out.get("kalshi", {}); e = out.get("equity", {}); o = out.get("equity_orders", {})
     print(f"[daily {started}] kalshi: resolved={k.get('resolved','?')} "
           f"recorded={k.get('recorded','?')}"
           + (f" ERR={k['error']}" if "error" in k else "")
           + f" | equity: resolved={e.get('resolved','?')} "
           f"recorded={e.get('recorded','?')}"
-          + (f" ERR={e['error']}" if "error" in e else ""))
+          + (f" ERR={e['error']}" if "error" in e else "")
+          + f" | eq_orders: resolved={o.get('resolved','?')} "
+          f"placed={o.get('placed','?')}"
+          + (f" ERR={o['error']}" if "error" in o else ""))
     return out
 
 

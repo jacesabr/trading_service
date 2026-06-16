@@ -198,6 +198,46 @@ def collect(probe=False):
     return db.record_signals_trades(batch)       # one connection, one commit
 
 
+def place_live_orders():
+    """For allow-listed equity BRACKET strategies, place REAL Alpaca bracket
+    orders on the LATEST (live) bar's signal only — separate from the backfill
+    collect, which must never place an order per historical bar. The broker
+    holds the OCO exit. No-op unless equity_orders.armed(). Returns # placed."""
+    import equity_orders
+    if not equity_orders.armed():
+        return 0
+    placed = 0
+    for name, base, tf, kind in _specs():
+        if kind != "bracket" or not equity_orders.allowed(name):
+            continue
+        warm = 110
+        for sym in SYMBOLS:
+            if equity_orders.has_open(name, sym):
+                continue                              # one open bracket per sym
+            try:
+                df = alpaca.bars(sym, tf, max(SCAN + 220, 260))
+            except Exception:
+                continue
+            if df is None or len(df) < warm + 2:
+                continue
+            bands = equity_zones(df)
+            if not bands:
+                continue
+            entry = float(df["close"].iloc[-1])       # latest closed bar
+            tr = _bracket(base, df, bands)
+            if not tr:
+                continue
+            d = tr["direction"]
+            if (tr["target"] - entry) * d <= 0 or (entry - tr["stop"]) * d <= 0:
+                continue
+            sid = db.record_signal(name, sym, tf, d, tr.get("rule", base),
+                                   detail={"tf": tf, "live_order": True})
+            if equity_orders.place_bracket(name, sid, sym, d, entry,
+                                           tr["stop"], tr["target"]):
+                placed += 1
+    return placed
+
+
 def resolve_open():
     rows = db._rows(
         "SELECT t.*, s.strategy, s.timeframe FROM trades t "
