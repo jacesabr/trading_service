@@ -293,6 +293,25 @@ def recent_trades(limit=400):
                  f"ORDER BY t.ts DESC LIMIT {int(limit)}")
 
 
+def recent_trades_capped(per=2000):
+    """Resolved trades, newest `per` PER STRATEGY (not a single global LIMIT).
+
+    A global LIMIT silently crowded older / low-frequency strategies out of the
+    window, so the dashboard rendered them as 0-trade even though they had
+    hundreds of resolved trades. Partitioning per strategy fixes that while
+    staying bounded (~n_strategies * per rows)."""
+    if IS_PG:
+        return _rows(
+            "SELECT * FROM (SELECT t.*, s.strategy, s.detail, "
+            "ROW_NUMBER() OVER (PARTITION BY s.strategy ORDER BY t.ts DESC) AS rn "
+            "FROM trades t JOIN signals s ON t.signal_id=s.id "
+            f"WHERE t.outcome!='') q WHERE rn <= {int(per)}")
+    # SQLite fallback: a generous global window (local dev has far fewer rows).
+    return _rows("SELECT t.*, s.strategy, s.detail FROM trades t JOIN signals s "
+                 "ON t.signal_id=s.id WHERE t.outcome!='' "
+                 f"ORDER BY t.ts DESC LIMIT {int(per) * 30}")
+
+
 def recent_bets(limit=400):
     return _rows("SELECT b.*, s.strategy FROM bets b JOIN signals s "
                  "ON b.signal_id=s.id WHERE b.outcome!='' "

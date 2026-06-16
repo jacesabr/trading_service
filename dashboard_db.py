@@ -119,7 +119,7 @@ def _build_cards():
     db.init()
     now = int(time.time())
     bets = db.recent_bets(800)
-    trades = db.recent_trades(2000)
+    trades = db.recent_trades_capped(2000)        # per-strategy: no 0-trade crowd-out
     execs = db.recent_executions(2000)
     act = db.activity()
 
