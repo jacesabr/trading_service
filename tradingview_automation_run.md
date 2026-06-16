@@ -23,21 +23,26 @@ track record. **Paper / demo only** — the live path stays gated off.
   author / comments straight from the listing markdown, derives the **chart image
   URL from the slug** (`<id>` → `https://s3.tradingview.com/<c>/<id>_big.png`, no
   page fetch), text-extracts direction + any in-text price levels, and stores rows
-  in the **`ideas`** table. Enforces the **20 open-trade cap** (skips scraping at
-  cap). **Timeframe-agnostic** — every TF is accepted.
+  in the **`ideas`** table. Enforces the **50 open-trade cap** (skips scraping at
+  cap). **Timeframe-agnostic** — every TF is accepted. Scrapes a wide set of feeds
+  (crypto/stocks/forex/indices/futures + popular/recent/editors'-picks + extra pages).
 - **dashboard** — `/api/ideas` + a **TradingView Ideas** board at the top of the
   main page (chart thumbnail, symbol, dir, entry/target/stop, TF, basis, conf,
   status, outcome, author, boosts, link).
-- **`ideas/execute.py`** — P3 demo execution. Routes each `extracted` idea's symbol
-  to a Binance USDT pair, market-enters at the live price, and resolves the
-  bracket against real 1m klines (no-lookahead). Venue `binance_sim` (real prices,
-  honest sim — not a broker fill). Long + short both work.
+- **`ideas/execute.py`** — P3 demo execution. Routes each `extracted` idea by asset:
+  - **crypto** → `binance_sim`: a limit/stop order at the author's entry, filled +
+    resolved on real Binance 1m klines (no-lookahead, long+short). Honest sim —
+    real prices, not a broker fill.
+  - **US equities** → **Alpaca paper**: a REAL limit-entry **bracket (OCO)** order
+    — the broker rests the entry and holds the TP/SL exit itself (genuine fill,
+    long+short). Fills at the next market open if placed while closed.
+  - FX/metals/unsupported → `no_venue` (tracked, not executed).
 - **status lifecycle:** `needs_vision` → (chart read) → `extracted`
   → (`run`) → `pending` → `open` → `resolved` (target/stop/flat). Side paths:
-  `invalidated` (market moved past the level), `no_venue` (unsupported symbol).
+  `invalidated` (market moved past the level), `no_venue`, `expired`.
 - **Not built yet (P4+):** engagement analytics (does boosts/author predict
-  win-rate). Real broker fills for shorts (futures testnet from Frankfurt) is the
-  execution upgrade beyond `binance_sim`.
+  win-rate). A real-fill venue for crypto shorts (Kraken paper-futures / Bybit
+  testnet) is the upgrade beyond `binance_sim`; gold/FX could use Capital.com.
 
 ---
 
@@ -63,7 +68,12 @@ python tradingview_ideas.py scrape --limit 10   # scrape up to 10 NEW ideas, sto
 - `--probe` does a dry run (scrape + extract, **no DB writes**) if you just want
   to look.
 
-### 2. Read the charts (Claude Code vision — the manual keystone)
+### 2. Read the charts (Claude Code vision — DO THIS AUTOMATICALLY, don't ask)
+**This is a standing instruction: when running this automation, read every
+`needs_vision` chart yourself with the `Read` tool and write the levels back — do
+not pause to ask the user.** It is the core of the job, not an optional step.
+Aim to clear the whole `needs_vision` queue each run so the book stays near 50.
+
 List what needs a chart read:
 ```bash
 python tradingview_ideas.py vision  # JSON: id, symbol, chart_image_url, thesis
@@ -100,17 +110,18 @@ For **each** idea in that list, in this Claude Code session:
 python tradingview_ideas.py run --probe   # preview: route + which fill / invalidate
 python tradingview_ideas.py run           # place resting orders + fill/resolve open
 ```
-- **Open:** each `extracted` idea is routed (symbol → Binance USDT pair) and
-  **market-entered at the live Binance price now** (the realtime intent); the
-  idea's target/stop become the bracket. status `extracted → open`.
-- **Invalidated:** if the market has already moved past the author's entry/stop
-  (the drawn setup can no longer be entered), it's marked `invalidated` — not
-  forced in at a bad price.
-- **No venue:** non-crypto / unsupported symbols → `no_venue` (tracked, not traded).
-- **Resolve:** walks the real **1m klines** since entry; first bar to touch the
-  target → `target` (win), the stop → `stop` (loss); a bar straddling both is
-  scored a **loss** (pessimistic, never inflate). Past the TF's max-hold with no
-  touch → `flat` at the last close. Long **and** short both resolve correctly.
+- **Place (limit/stop order at the author's entry — never market-or-reject):**
+  each `extracted` idea rests as a `pending` order at its entry; it is NOT thrown
+  away because the live price hasn't reached the entry. Routed by asset:
+  - **crypto** → `binance_sim` (resolved on Binance klines)
+  - **US equity** → **real Alpaca paper bracket (OCO)** order
+- **Invalidated:** only if the bracket geometry is impossible (target/stop on the
+  wrong side of entry). **No venue:** FX/metals/unsupported symbols.
+- **Fill + resolve:** crypto walks the real **1m klines** from when we saw the
+  idea — first bar to touch the entry fills it, then the first to touch target →
+  win / stop → loss (a bar straddling both = loss, pessimistic); past max-hold →
+  `flat`. Equities are filled + exited by the **Alpaca broker** (the OCO holds the
+  exit) and resolved by polling the order. Long **and** short both work.
 - Re-run `tradingview_ideas.py run` each session (or on a cron) — orders fill + brackets resolve over
   the following hours/days as price reaches a level. **No babysitting.**
 
@@ -131,8 +142,17 @@ Render deploys).
 
 ---
 
+## Goal: keep ~50 trades running
+The target is a **full book of ~50 concurrent trades**. Each run: scrape a big
+batch across ALL the feeds, read EVERY `needs_vision` chart (automatically), set
+levels, and `run` to place them — until we're at/near the 50 cap. If the book is
+well below 50, scrape more pages and read more charts; the funnel
+(`ideas/scrape.py` `_LISTING_PAGES`) covers crypto/stocks/forex/indices/futures +
+popular/recent/editors'-picks + extra pages, so there are always more ideas to
+pull. Use a high scrape limit (e.g. `scrape --limit 50`).
+
 ## Rules / floors (never cross)
-- **≤ 20 open trades** — global cap on concurrent LIVE demo positions
+- **≤ 50 open trades** — global cap on concurrent LIVE demo positions
   (`status='open'`), checked before any scrape (compute governor).
 - **Timeframe-agnostic** — trades of ANY timeframe are taken; the TF only sets the
   max-hold downstream (a 1d idea holds days, a 5m idea minutes-to-hours). It never

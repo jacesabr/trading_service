@@ -7,7 +7,7 @@ Fetches public trading ideas from TradingView via Tavily, extracts trade params
 ANTHROPIC_API_KEY is set), then stores everything in the `ideas` DB table.
 
 Safety:
-  - Checks the 20-open-trade global cap before any expensive scraping.
+  - Checks the 50-open-trade global cap before any expensive scraping.
   - Timeframe-agnostic — trades of any timeframe are accepted (TF only sets the
     max-hold downstream; it never drops an idea).
   - No orders placed here (execution lives in ideas_exec.py).
@@ -33,7 +33,7 @@ import db
 # ─── Config ──────────────────────────────────────────────────────────────────
 TAVILY_KEY     = os.environ.get("TAVILY_API_KEY", "")
 ANTHROPIC_KEY  = os.environ.get("ANTHROPIC_API_KEY", "")
-MAX_OPEN       = 20          # global cap: skip scrape when OPEN trades >= this
+MAX_OPEN       = 50          # global cap: skip scrape when OPEN trades >= this
 VISION_MODEL   = "claude-haiku-4-5-20251001"
 # Timeframe-agnostic: trades of ANY timeframe are accepted (no TF cap). The TF is
 # still recorded (it sets the max-hold in ideas_exec), it just never drops an idea.
@@ -133,12 +133,29 @@ def _tavily(endpoint, payload, timeout=45):
         return {"error": str(e)}
 
 
-# Listing pages (order: highest idea density first)
+# Listing pages — as many distinct idea feeds as we can pull, so the funnel is
+# always wide enough to keep ~50 trades running. Covers every asset class + the
+# editors'-picks/popular feeds + a few extra pages of the densest feeds. Each is
+# Tavily-extracted; dedupe by url means overlap between feeds is free.
 _LISTING_PAGES = [
+    # crypto (densest) — base + popular + extra pages
     "https://www.tradingview.com/markets/cryptocurrencies/ideas/",
+    "https://www.tradingview.com/markets/cryptocurrencies/ideas/page-2/",
+    "https://www.tradingview.com/markets/cryptocurrencies/ideas/?sort=recent",
+    # US equities — base + popular + extra pages
     "https://www.tradingview.com/markets/stocks-usa/ideas/",
+    "https://www.tradingview.com/markets/stocks-usa/ideas/page-2/",
+    "https://www.tradingview.com/markets/stocks-usa/ideas/?sort=recent",
+    # other asset classes
     "https://www.tradingview.com/markets/futures/ideas/",
+    "https://www.tradingview.com/markets/currencies/ideas/",          # forex
+    "https://www.tradingview.com/markets/world-stocks/ideas/",
+    "https://www.tradingview.com/markets/indices/ideas/",
+    "https://www.tradingview.com/markets/cryptocurrencies/ideas/?sort=popular",
+    "https://www.tradingview.com/markets/stocks-usa/ideas/?sort=popular",
+    # the global editors'-picks / all-ideas feed
     "https://www.tradingview.com/ideas/",
+    "https://www.tradingview.com/ideas/page-2/",
 ]
 
 # Pattern for individual TradingView chart/idea pages

@@ -291,7 +291,7 @@ def ideas_feed():
                     "wins": wins, "pnl_bps": pnl,
                     "dropped": st("dropped_tf") + st("invalidated")
                                + st("no_venue") + st("expired"),
-                    "cap": 20})
+                    "cap": 50})
 
 
 @app.route("/api/admin/stats")
