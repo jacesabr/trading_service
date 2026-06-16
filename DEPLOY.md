@@ -58,7 +58,8 @@ chart-read brackets on **real Binance public data** (`binance_sim`: market-enter
 at the live price, resolve TP/SL on 1m klines, long+short) — keyless, runs from
 any region. Full procedure: [tradingview_automation_run.md](tradingview_automation_run.md).
 Needs `TAVILY_API_KEY` in the shell/env (`BINANCE_REST` optional, defaults to
-`api.binance.com`). Paper/demo only; ≤50 open ideas, ≤4H TF.
+`api.binance.com`). Paper/demo only; **≤20 concurrent open trades**, **any
+timeframe** (TF sets the max-hold, never drops an idea).
 
 ## DB schema (created on first `db.init()`)
 `signals · bets · trades · executions · experiments · strategy_versions · lessons`

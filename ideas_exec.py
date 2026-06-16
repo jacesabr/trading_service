@@ -37,11 +37,13 @@ import db
 BINANCE = os.environ.get("BINANCE_REST", "https://api.binance.com")
 VENUE   = "binance_sim"
 
-# TF → max-hold in bars (after which an un-hit bracket is flattened). A bounded
-# hold so slots free up; the ≤4H cap means these are all short horizons.
+# TF → minutes; sets the max-hold (after which an un-hit bracket is flattened) so
+# slots free up. Timeframe-agnostic: any TF is tradeable, the TF just scales the
+# hold (a 1d idea holds days, a 5m idea minutes-to-hours).
 TF_MIN  = {"1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30,
-           "1h": 60, "2h": 120, "3h": 180, "4h": 240}
-MAX_HOLD_BARS = 24            # e.g. a 1h idea holds ≤24h, a 4h idea ≤96h
+           "1h": 60, "2h": 120, "3h": 180, "4h": 240, "6h": 360, "8h": 480,
+           "12h": 720, "1d": 1440, "3d": 4320, "1w": 10080}
+MAX_HOLD_BARS = 24            # e.g. a 1h idea holds ≤24h, a 1d idea ≤24 days
 
 
 # ─── Binance public data (keyless; works from any region) ─────────────────────

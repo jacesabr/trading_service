@@ -290,7 +290,7 @@ def ideas_feed():
                     "open": st("open"), "resolved": len(res),
                     "wins": wins, "pnl_bps": pnl,
                     "dropped": st("dropped_tf") + st("invalidated") + st("no_venue"),
-                    "cap": 50})
+                    "cap": 20})
 
 
 @app.route("/api/admin/stats")

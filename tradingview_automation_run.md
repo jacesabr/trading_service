@@ -23,8 +23,8 @@ track record. **Paper / demo only** — the live path stays gated off.
   author / comments straight from the listing markdown, derives the **chart image
   URL from the slug** (`<id>` → `https://s3.tradingview.com/<c>/<id>_big.png`, no
   page fetch), text-extracts direction + any in-text price levels, and stores rows
-  in the **`ideas`** table. Enforces the **50 open-idea cap** (skips scraping at
-  cap) and the **≤4H timeframe** rule.
+  in the **`ideas`** table. Enforces the **20 open-trade cap** (skips scraping at
+  cap). **Timeframe-agnostic** — every TF is accepted.
 - **dashboard** — `/api/ideas` + a **TradingView Ideas** board at the top of the
   main page (chart thumbnail, symbol, dir, entry/target/stop, TF, basis, conf,
   status, outcome, author, boosts, link).
@@ -34,7 +34,7 @@ track record. **Paper / demo only** — the live path stays gated off.
   honest sim — not a broker fill). Long + short both work.
 - **status lifecycle:** `needs_vision` → (chart read) → `extracted`
   → (`ideas_exec`) → `open` → `resolved` (target/stop/flat). Side paths:
-  `dropped_tf` (TF > 4H), `invalidated` (market moved past the level), `no_venue`.
+  `invalidated` (market moved past the level), `no_venue` (unsupported symbol).
 - **Not built yet (P4+):** engagement analytics (does boosts/author predict
   win-rate). Real broker fills for shorts (futures testnet from Frankfurt) is the
   execution upgrade beyond `binance_sim`.
@@ -56,7 +56,7 @@ export TAVILY_API_KEY=tvly-...      # from .env
 ```bash
 python ideas_mvp.py --limit 10      # scrape up to 10 NEW ideas, store them
 ```
-- At the **50-open cap** it prints `[cap] … skipping scrape` and stops — that's
+- At the **20-open cap** it prints `[cap] … skipping scrape` and stops — that's
   the compute governor working, not an error.
 - Each new idea lands as `needs_vision` (text-only) unless its levels were
   already in the post text (rare) → `extracted`.
@@ -87,8 +87,8 @@ For **each** idea in that list, in this Claude Code session:
      --entry 67000 --target 58000 --stop 68200 --confidence 0.65
    ```
    - `--basis chart` is the default (it's a real author level read off the chart).
-   - **TF > 4H** (`1d`, `1w`) → pass `--tf 1d` and it auto-sets `dropped_tf`
-     (the ≤4H rule). You can skip the price flags for these.
+   - **Any timeframe is tradeable** — record the chart's real TF (`5m`…`1w`); it
+     sets the max-hold, never drops the idea.
    - **Educational / no-setup infographics** (no real levels) → leave as
      `needs_vision`, or set `--direction 0` to flag it unclear.
    - **Thesis-only, no drawn levels** → *generate* a sane bracket from the thesis
@@ -132,8 +132,11 @@ Render deploys).
 ---
 
 ## Rules / floors (never cross)
-- **≤ 50 open ideas** — global cap, checked before any scrape (compute governor).
-- **≤ 4H timeframe** — anything `1d`/`1w` is `dropped_tf`, never traded.
+- **≤ 20 open trades** — global cap on concurrent LIVE demo positions
+  (`status='open'`), checked before any scrape (compute governor).
+- **Timeframe-agnostic** — trades of ANY timeframe are taken; the TF only sets the
+  max-hold downstream (a 1d idea holds days, a 5m idea minutes-to-hours). It never
+  drops an idea. (Reinstate a cap by setting `MAX_TF_MIN` in `ideas_mvp.py`.)
 - **Demo / paper only** — real money still needs `LIVE_BUDGET_ARMED=1` (off).
 - **AI/agent-generated levels are tagged** `basis=generated` — never presented as
   the author's call. Chart-read levels are `basis=chart`; in-text are `basis=text`.

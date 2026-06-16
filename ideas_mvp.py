@@ -5,9 +5,10 @@ Fetches public trading ideas from TradingView via Tavily, extracts trade params
 ANTHROPIC_API_KEY is set), then stores everything in the `ideas` DB table.
 
 Safety:
-  - Checks 50-trade global cap before any expensive scraping.
-  - ≤4H timeframe only (>4H ideas dropped — no multi-week positions).
-  - No orders placed (P3+ execution not included here).
+  - Checks the 20-open-trade global cap before any expensive scraping.
+  - Timeframe-agnostic — trades of any timeframe are accepted (TF only sets the
+    max-hold downstream; it never drops an idea).
+  - No orders placed here (execution lives in ideas_exec.py).
   - Paper/demo floor unaffected.
 
 Usage:
@@ -30,10 +31,11 @@ import db
 # ─── Config ──────────────────────────────────────────────────────────────────
 TAVILY_KEY     = os.environ.get("TAVILY_API_KEY", "")
 ANTHROPIC_KEY  = os.environ.get("ANTHROPIC_API_KEY", "")
-MAX_OPEN       = 50          # global cap: skip scrape when open ideas >= this
+MAX_OPEN       = 20          # global cap: skip scrape when OPEN trades >= this
 VISION_MODEL   = "claude-haiku-4-5-20251001"
-# timeframes we accept (idea TF parsed > 4h → drop)
-MAX_TF_MIN = 240         # 4H cap (in minutes)
+# Timeframe-agnostic: trades of ANY timeframe are accepted (no TF cap). The TF is
+# still recorded (it sets the max-hold in ideas_exec), it just never drops an idea.
+MAX_TF_MIN = None        # None = no cap
 
 # ─── DB: ideas table ─────────────────────────────────────────────────────────
 _SCHEMA = f"""
@@ -87,7 +89,9 @@ def _known_urls():
 
 
 def _open_count():
-    rows = db._rows("SELECT COUNT(*) AS n FROM ideas WHERE outcome IS NULL OR outcome=''")
+    """Count LIVE demo trades (status='open') — the global cap is on concurrent
+    open positions, not on unresolved/awaiting-vision rows."""
+    rows = db._rows("SELECT COUNT(*) AS n FROM ideas WHERE status='open'")
     return int(rows[0]["n"]) if rows else 0
 
 
@@ -413,11 +417,12 @@ def _tf_minutes(tf):
 
 
 def _tf_allowed(tf):
-    """≤4H only. Unknown TF is kept (no info to drop on); >4H is dropped."""
-    mins = _tf_minutes(tf)
-    if mins is None:
+    """Timeframe-agnostic — every timeframe is allowed (MAX_TF_MIN=None). Kept as
+    a function so a cap can be reinstated by setting MAX_TF_MIN to a minute value."""
+    if MAX_TF_MIN is None:
         return True
-    return mins <= MAX_TF_MIN
+    mins = _tf_minutes(tf)
+    return mins is None or mins <= MAX_TF_MIN
 
 
 # ─── Core: process one idea ───────────────────────────────────────────────────
