@@ -261,37 +261,80 @@ def stats():
     return jsonify(full)
 
 
+# Notional per idea-trade for the $ expectancy (bps → $). At $10k, 1 bps = $1, so
+# expected $/trade ≈ mean ret_bps. Tune with IDEA_NOTIONAL.
+IDEA_NOTIONAL = float(os.environ.get("IDEA_NOTIONAL", "10000"))
+BROKER_NAME = {"alpaca": "Alpaca paper", "binance_sim": "Binance (sim)",
+               "oanda": "OANDA", "kraken": "Kraken paper"}
+
+
 @app.route("/api/ideas")
 def ideas_feed():
-    """PUBLIC — TradingView community ideas (scraped by ideas_mvp.py).
-
-    Returns the most-recent ideas with their extracted/chart-read trade params,
-    engagement, and resolution state. Tolerant of a missing `ideas` table
-    (returns empty) so the dashboard works before the first scrape."""
-    cols = ("id, ts, url, author, symbol, title, thesis, boosts, comments, "
-            "chart_image_url, direction, entry, stop, target, timeframe, basis, "
-            "confidence, outcome, ret_bps, status")
+    """PUBLIC — TradingView idea TRADES only (chart-read happens in-flow during the
+    run, so non-trades like `needs_vision` never surface here). Returns header
+    stats + two lists: `ongoing` (pending/open orders) and `previous` (resolved).
+    Tolerant of a missing `ideas` table (returns empty)."""
+    cols = ("id, ts, url, author, symbol, boosts, chart_image_url, direction, "
+            "entry, stop, target, timeframe, basis, confidence, outcome, ret_bps, "
+            "status")
     try:
         rows = db._rows(f"SELECT {cols}, venue, exec_entry, exec_ts, bars_held "
-                        "FROM ideas ORDER BY ts DESC LIMIT 500")
+                        "FROM ideas ORDER BY ts DESC LIMIT 1000")
     except Exception:
-        # exec columns may not exist yet (before first ideas_exec run)
-        try:
-            rows = db._rows(f"SELECT {cols} FROM ideas ORDER BY ts DESC LIMIT 500")
-        except Exception:
-            rows = []
+        rows = []
+
+    def _bps_to_usd(b):
+        return round(float(b or 0) / 1e4 * IDEA_NOTIONAL, 2)
+
+    def _view(r, closed=False):
+        v = dict(symbol=r["symbol"], direction=r["direction"],
+                 entry=r.get("exec_entry") or r["entry"], target=r["target"],
+                 stop=r["stop"], timeframe=r["timeframe"], basis=r["basis"],
+                 confidence=r["confidence"], url=r["url"],
+                 chart_image_url=r["chart_image_url"], author=r["author"],
+                 venue=r.get("venue"), broker=BROKER_NAME.get(r.get("venue"), r.get("venue") or "—"),
+                 exec_ts=r.get("exec_ts"), placed_ts=r["ts"], status=r["status"])
+        if closed:
+            # exit price ≈ the level that was hit (target/stop); flat has none stored
+            exit_px = (r["target"] if r["outcome"] == "target"
+                       else r["stop"] if r["outcome"] == "stop" else None)
+            v.update(outcome=r["outcome"], ret_bps=r.get("ret_bps"), exit=exit_px,
+                     pnl_usd=_bps_to_usd(r.get("ret_bps")), bars_held=r.get("bars_held"))
+        return v
+
+    ongoing = [_view(r) for r in rows if r.get("status") in ("pending", "open")]
+    previous = [_view(r, closed=True) for r in rows if r.get("status") == "resolved"]
+
+    # header stats over resolved trades
+    n_res = len(previous)
+    wins = sum(1 for p in previous if (p.get("ret_bps") or 0) > 0)
+    losses = n_res - wins
+    win_rate = round(wins / n_res, 4) if n_res else None
+    total_usd = round(sum(p.get("pnl_usd") or 0 for p in previous), 2)
+    exp_usd = round(total_usd / n_res, 2) if n_res else None
+    # planned reward:risk over all trade rows that have a full bracket
+    rrs = []
+    for r in rows:
+        if r.get("status") in ("pending", "open", "resolved") and r["entry"] and r["target"] and r["stop"]:
+            risk = abs(r["entry"] - r["stop"])
+            if risk > 0:
+                rrs.append(abs(r["target"] - r["entry"]) / risk)
+    avg_rr = round(sum(rrs) / len(rrs), 2) if rrs else None
+
     st = lambda s: sum(1 for r in rows if r.get("status") == s)
-    res = [r for r in rows if r.get("status") == "resolved"]
-    wins = sum(1 for r in res if (r.get("ret_bps") or 0) > 0)
-    pnl  = round(sum(float(r.get("ret_bps") or 0) for r in res), 1)
-    return jsonify({"last_update": int(time.time()), "ideas": rows,
-                    "n": len(rows),
-                    "extracted": st("extracted"), "needs_vision": st("needs_vision"),
-                    "pending": st("pending"), "open": st("open"), "resolved": len(res),
-                    "wins": wins, "pnl_bps": pnl,
-                    "dropped": st("dropped_tf") + st("invalidated")
-                               + st("no_venue") + st("expired"),
-                    "cap": 50})
+    return jsonify({
+        "last_update": int(time.time()),
+        "stats": {"wins": wins, "losses": losses, "n_resolved": n_res,
+                  "win_rate": win_rate, "avg_rr": avg_rr, "exp_usd": exp_usd,
+                  "total_usd": total_usd, "open_n": len(ongoing),
+                  "notional": IDEA_NOTIONAL},
+        "ongoing": ongoing, "previous": previous,
+        "cap": 50,
+        # small pipeline counts (NOT shown as trades — chart-read happens in-flow)
+        "pipeline": {"needs_vision": st("needs_vision"), "extracted": st("extracted"),
+                     "no_venue": st("no_venue"), "invalidated": st("invalidated"),
+                     "expired": st("expired")},
+    })
 
 
 @app.route("/api/admin/stats")
@@ -378,20 +421,42 @@ table.ideas tr:hover td{background:#0f1828}
 .thumb{width:42px;height:26px;object-fit:cover;border-radius:3px;border:1px solid var(--line);vertical-align:middle}
 .bas{font-size:9px;color:var(--dim)}.bas-chart{color:var(--up)}.bas-generated{color:var(--live)}
 a.idea-link{color:var(--live);text-decoration:none}a.idea-link:hover{text-decoration:underline}
+/* ideas stats strip + dropdowns */
+.statgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:4px 0 14px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+.stat .v{font:600 22px var(--mono);font-variant-numeric:tabular-nums}
+.stat .l{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px}
+#sec_ideas+#ideas_stats{margin-top:8px}
+details#det_ongoing,details#det_prev{background:var(--panel);border:1px solid var(--line);border-radius:10px;margin-bottom:10px;padding:4px 0}
+details#det_ongoing>summary,details#det_prev>summary{font:600 13px var(--mono);text-transform:uppercase;letter-spacing:.04em;color:var(--ink);cursor:pointer;padding:10px 14px;list-style:none}
+details>summary::-webkit-details-marker{display:none}
+details#det_ongoing>summary:before,details#det_prev>summary:before{content:'▸ ';color:var(--live)}
+details[open]#det_ongoing>summary:before,details[open] >summary:before{content:'▾ '}
+.cnt{color:var(--dim);font-weight:400}
+.tw{overflow-x:auto;padding:0 6px 6px}
+.broker{font-size:10px;padding:1px 6px;border-radius:3px;font-weight:600;white-space:nowrap}
+.broker-alpaca{background:#13314d;color:#5fa8e0}.broker-sim{background:#2d2740;color:#b39ddb}
 </style>
 <h1>STRATEGY TRACKER</h1>
 <div class=sub id=sub>loading…</div>
 
 <h2 class=sec id=sec_ideas style="color:var(--live)">💡 TRADINGVIEW IDEAS
-  <small>· community ideas scraped &amp; chart-read → demo-executed · <span id=ideas_stat></span></small></h2>
-<div id=ideas_wrap>
-  <table id=ideas_tbl class=ideas><thead><tr>
+  <small>· community ideas chart-read &amp; demo-executed onto brokers · <span id=ideas_sub></span></small></h2>
+<div id=ideas_stats class=statgrid></div>
+<details id=det_ongoing open><summary>Ongoing trades <span id=cnt_ongoing class=cnt></span></summary>
+  <div class=tw><table class=ideas id=tbl_ongoing><thead><tr>
     <th>chart</th><th>symbol</th><th>dir</th><th>entry</th><th>target</th><th>stop</th>
-    <th>TF</th><th>basis</th><th>conf</th><th>status</th><th>outcome</th>
-    <th>author</th><th>boosts</th><th>idea</th>
-  </tr></thead><tbody id=ideas_body></tbody></table>
-  <div class=empty id=ideas_empty style="display:none">No ideas scraped yet — run <code>python tradingview_ideas.py all</code>.</div>
-</div>
+    <th>RR</th><th>TF</th><th>broker</th><th>executed</th><th>status</th><th>conf</th><th>idea</th>
+  </tr></thead><tbody id=body_ongoing></tbody></table></div>
+  <div class=empty id=empty_ongoing style="display:none">No ongoing trades.</div>
+</details>
+<details id=det_prev><summary>Previous trades <span id=cnt_prev class=cnt></span></summary>
+  <div class=tw><table class=ideas id=tbl_prev><thead><tr>
+    <th>chart</th><th>symbol</th><th>dir</th><th>entry</th><th>exit</th><th>outcome</th>
+    <th>P&amp;L</th><th>TF</th><th>broker</th><th>executed</th><th>idea</th>
+  </tr></thead><tbody id=body_prev></tbody></table></div>
+  <div class=empty id=empty_prev style="display:none">No closed trades yet.</div>
+</details>
 
 <h2 class=sec id=sec_live><span class="livedot"></span>LIVE — real broker orders <small>· actual filled demo trades (Alpaca paper), most → least profitable</small></h2>
 <div class=grid id=grid_live></div>
@@ -508,42 +573,72 @@ async function tick(){
 }
 function ideaDir(d){return d===1?'<span class=b-long>LONG</span>':d===-1?'<span class=b-short>SHORT</span>':'<span class=b-none>—</span>';}
 function px(v){return (v==null||v===0)?'—':Number(v).toLocaleString(undefined,{maximumFractionDigits:2});}
+function fmtDT(ts){ if(!ts) return '<span style="color:var(--dim)">resting</span>';
+  const d=new Date(ts*1000); return d.toLocaleString([], {month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'}); }
+function thumbCell(r){ return r.chart_image_url
+  ? `<a href="${r.url}" target=_blank rel=noopener><img class=thumb src="${r.chart_image_url}" loading=lazy onerror="this.style.display='none'"></a>` : '—'; }
+function brokerCell(v){ if(!v) return '—';
+  const cls = v.indexOf('Alpaca')>=0?'broker-alpaca':'broker-sim';
+  return `<span class="broker ${cls}">${v}</span>`; }
+function usd(v){ if(v==null) return '—'; const s=v>=0?'+$':'−$'; return s+Math.abs(v).toLocaleString(undefined,{maximumFractionDigits:2}); }
+function rr(r){ if(!r.entry||!r.target||!r.stop) return '—';
+  const risk=Math.abs(r.entry-r.stop); if(!risk) return '—';
+  return (Math.abs(r.target-r.entry)/risk).toFixed(2); }
+function statCard(l,v,cls){ return `<div class=stat><div class=l>${l}</div><div class="v ${cls||''}">${v}</div></div>`; }
+
 async function tickIdeas(){
  let s; try{ s=await(await fetch('/api/ideas')).json(); }catch(e){ return; }
- const body=document.getElementById('ideas_body');
- const empty=document.getElementById('ideas_empty');
- const stat=document.getElementById('ideas_stat');
- const pnlTxt = s.resolved ? ` · ${s.wins}/${s.resolved} win, ${s.pnl_bps>=0?'+':''}${s.pnl_bps} bps` : '';
- stat.innerHTML = `${s.n} ideas · ${s.extracted} ready · ${s.needs_vision} need chart-read · `
-   + `<b style="color:#5fa8e0">${s.open} open</b> · ${s.resolved} resolved${pnlTxt} · ${s.dropped} dropped · ${s.open}/${s.cap} cap`;
- if(!s.ideas||!s.ideas.length){ empty.style.display=''; document.getElementById('ideas_tbl').style.display='none'; return; }
- empty.style.display='none'; document.getElementById('ideas_tbl').style.display='';
- body.innerHTML = s.ideas.map(r=>{
-  const thumb = r.chart_image_url
-    ? `<a href="${r.url}" target=_blank rel=noopener><img class=thumb src="${r.chart_image_url}" loading=lazy onerror="this.style.display='none'"></a>` : '—';
-  let oc;
-  if(r.outcome){ oc = r.ret_bps>=0
-        ? `<span class=pos>${r.outcome} +${r.ret_bps} bps</span>`
-        : `<span class=neg>${r.outcome} ${r.ret_bps} bps</span>`; }
-  else if(r.status==='open'){ oc = `<span style="color:#5fa8e0">live @ ${px(r.exec_entry)}</span>`; }
-  else { oc = '<span style="color:var(--dim)">—</span>'; }
-  return `<tr>
-    <td>${thumb}</td>
+ const st=s.stats||{};
+ document.getElementById('ideas_sub').innerHTML =
+   `${st.open_n||0} ongoing · ${st.n_resolved||0} closed · cap ${s.cap} · <span style="color:var(--dim)">$ at $${(st.notional||0).toLocaleString()} notional/trade</span>`;
+ // header stats
+ const wr = st.win_rate==null?'—':(100*st.win_rate).toFixed(0)+'%';
+ document.getElementById('ideas_stats').innerHTML =
+   statCard('Wins', st.wins||0, 'pos')
+ + statCard('Losses', st.losses||0, 'neg')
+ + statCard('Win rate', wr)
+ + statCard('Avg R:R', st.avg_rr==null?'—':st.avg_rr)
+ + statCard('Expected $/trade', usd(st.exp_usd), (st.exp_usd||0)>=0?'pos':'neg')
+ + statCard('Total P&amp;L', usd(st.total_usd), (st.total_usd||0)>=0?'pos':'neg')
+ + statCard('Ongoing', st.open_n||0);
+
+ // ongoing
+ const bo=document.getElementById('body_ongoing'), eo=document.getElementById('empty_ongoing');
+ document.getElementById('cnt_ongoing').textContent = '('+(s.ongoing?s.ongoing.length:0)+')';
+ if(!s.ongoing||!s.ongoing.length){ eo.style.display=''; document.getElementById('tbl_ongoing').style.display='none'; }
+ else { eo.style.display='none'; document.getElementById('tbl_ongoing').style.display='';
+  bo.innerHTML = s.ongoing.map(r=>`<tr>
+    <td>${thumbCell(r)}</td>
     <td><b style="color:var(--ink)">${r.symbol||'?'}</b></td>
     <td>${ideaDir(r.direction)}</td>
-    <td>${px(r.entry)}</td>
-    <td>${px(r.target)}</td>
-    <td>${px(r.stop)}</td>
-    <td>${r.timeframe||'—'}</td>
-    <td class="bas bas-${r.basis||''}">${r.basis||'—'}</td>
+    <td>${px(r.entry)}</td><td>${px(r.target)}</td><td>${px(r.stop)}</td>
+    <td>${rr(r)}</td><td>${r.timeframe||'—'}</td>
+    <td>${brokerCell(r.broker)}</td>
+    <td>${fmtDT(r.exec_ts)}</td>
+    <td><span class="st st-${r.status}">${r.status==='open'?'filled':'working'}</span></td>
     <td>${r.confidence!=null?(r.confidence*100).toFixed(0)+'%':'—'}</td>
-    <td><span class="st st-${r.status||'stored'}">${(r.status||'stored').replace('_',' ')}</span></td>
-    <td>${oc}</td>
-    <td style="color:var(--dim)">${r.author||'—'}</td>
-    <td>${r.boosts||0}</td>
     <td><a class=idea-link href="${r.url}" target=_blank rel=noopener>open ↗</a></td>
-  </tr>`;
- }).join('');
+  </tr>`).join(''); }
+
+ // previous
+ const bp=document.getElementById('body_prev'), ep=document.getElementById('empty_prev');
+ document.getElementById('cnt_prev').textContent = '('+(s.previous?s.previous.length:0)+')';
+ if(!s.previous||!s.previous.length){ ep.style.display=''; document.getElementById('tbl_prev').style.display='none'; }
+ else { ep.style.display='none'; document.getElementById('tbl_prev').style.display='';
+  bp.innerHTML = s.previous.map(r=>{
+   const win=(r.ret_bps||0)>0;
+   return `<tr>
+    <td>${thumbCell(r)}</td>
+    <td><b style="color:var(--ink)">${r.symbol||'?'}</b></td>
+    <td>${ideaDir(r.direction)}</td>
+    <td>${px(r.entry)}</td><td>${px(r.exit)}</td>
+    <td class="${win?'pos':'neg'}">${r.outcome||''}</td>
+    <td class="${win?'pos':'neg'}">${usd(r.pnl_usd)} <span style="color:var(--dim)">(${r.ret_bps>0?'+':''}${r.ret_bps}bps)</span></td>
+    <td>${r.timeframe||'—'}</td>
+    <td>${brokerCell(r.broker)}</td>
+    <td>${fmtDT(r.exec_ts)}</td>
+    <td><a class=idea-link href="${r.url}" target=_blank rel=noopener>open ↗</a></td>
+  </tr>`; }).join(''); }
 }
 tick();setInterval(tick,30000);
 tickIdeas();setInterval(tickIdeas,30000);
