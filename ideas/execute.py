@@ -41,12 +41,15 @@ Usage:
 import argparse
 import json
 import os
+import re
 import time
 import urllib.request
 
 import db
+import equity_orders                       # reuse the Alpaca paper order HTTP layer
 
 BINANCE = os.environ.get("BINANCE_REST", "https://api.binance.com")
+ALPACA_VENUE = "alpaca"                     # REAL Alpaca paper bracket (broker OCO)
 VENUE   = "binance_sim"
 
 # TF → minutes; sets the max-hold (after which an un-hit bracket is flattened) so
@@ -131,6 +134,97 @@ def route(symbol):
     return None
 
 
+# ─── Alpaca equity venue (REAL paper bracket OCO, broker-held) ────────────────
+# Equity ideas (TSLA / AAPL / MSFT …) can't resolve on Binance klines, so they go
+# to Alpaca paper as a REAL limit-entry bracket order: the broker rests the entry
+# at the author's price, then holds the take-profit/stop-loss OCO exit itself. This
+# is a genuine broker fill (not sim) — the strongest credibility. Paper account
+# only; the money floor (LIVE_BUDGET_ARMED) is untouched.
+def _alpaca_keys_present():
+    return bool(os.environ.get("ALPACA_KEY") and os.environ.get("ALPACA_SECRET"))
+
+
+def _alpaca_asset(symbol):
+    """Alpaca asset record (or {} on error) — used to confirm tradable/shortable."""
+    a = equity_orders._api(f"/assets/{symbol}")
+    return a if isinstance(a, dict) and not a.get("err") else {}
+
+
+def route_equity(symbol):
+    """TradingView symbol → a tradable Alpaca US-equity symbol, or None.
+
+    Rejects crypto pairs, FX/metals (XAUUSD …), and anything Alpaca won't trade
+    (e.g. not-yet-public tickers). Requires Alpaca keys to be present."""
+    if not symbol or not _alpaca_keys_present():
+        return None
+    s = symbol.upper().strip()
+    if ":" in s:
+        s = s.split(":", 1)[1]
+    if any(s.endswith(q) for q in ("USDT", "USDC", "PERP")):
+        return None                                   # crypto
+    if s.endswith("USD") or s.endswith("EUR") or s.endswith("GBP") or s.endswith("JPY"):
+        return None                                   # FX / metals (XAUUSD, EURUSD…)
+    if not re.fullmatch(r"[A-Z]{1,5}", s):
+        return None                                   # not a plain US ticker
+    a = _alpaca_asset(s)
+    if a.get("status") == "active" and a.get("tradable"):
+        return s
+    return None
+
+
+def _place_equity_bracket(r, esym, probe=False):
+    """Submit a REAL Alpaca paper limit-entry bracket order (qty 1). The broker
+    holds the OCO exit. Returns the order id, or None on reject/short-not-allowed."""
+    d = r["direction"]
+    side = "buy" if d > 0 else "sell"
+    if d < 0 and not _alpaca_asset(esym).get("shortable"):
+        print(f"  idea {r['id']} {esym}: not shortable on Alpaca -> no_venue")
+        return None
+    if probe:
+        print(f"  idea {r['id']} {esym}: WOULD place {side} limit bracket "
+              f"entry={r['entry']} tp={r['target']} sl={r['stop']}")
+        return "probe"
+    body = {"symbol": esym, "qty": "1", "side": side, "type": "limit",
+            "limit_price": round(float(r["entry"]), 2), "time_in_force": "gtc",
+            "order_class": "bracket",
+            "take_profit": {"limit_price": round(float(r["target"]), 2)},
+            "stop_loss": {"stop_price": round(float(r["stop"]), 2)}}
+    o = equity_orders._api("/orders", "POST", body)
+    if o.get("err") or not o.get("id"):
+        print(f"  idea {r['id']} {esym}: Alpaca reject {o.get('body', o)}")
+        return None
+    return o["id"]
+
+
+def _resolve_equity(r):
+    """Poll the Alpaca bracket order → fill (pending→open) / OCO exit (→resolved) /
+    dead parent (→invalidated). Returns column updates or None (still working)."""
+    oid = (r.get("ref") or "")[len("order:"):]
+    if not oid:
+        return None
+    o = equity_orders._api(f"/orders/{oid}?nested=true")
+    if o.get("err"):
+        return None
+    legs = o.get("legs") or []
+    filled = [l for l in legs if l.get("status") == "filled" and l.get("filled_avg_price")]
+    if filled:
+        leg = filled[0]
+        exitp = float(leg["filled_avg_price"])
+        entry = float(o.get("filled_avg_price") or r["entry"])
+        d = 1 if r["direction"] > 0 else -1
+        ret = d * (exitp - entry) / entry * 1e4
+        outcome = "target" if leg.get("type") == "limit" else "stop"
+        return dict(status="resolved", outcome=outcome, ret_bps=round(ret, 1),
+                    exec_entry=round(entry, 2), bars_held=0)
+    pstatus = o.get("status")
+    if o.get("filled_avg_price") and pstatus in ("filled", "partially_filled"):
+        return dict(status="open", exec_entry=round(float(o["filled_avg_price"]), 2),
+                    exec_ts=int(time.time()))
+    if pstatus in ("canceled", "expired", "rejected"):
+        return dict(status="invalidated")
+    return None                                       # entry limit still resting
+
+
 # ─── DB helpers (idea exec columns) ───────────────────────────────────────────
 def _ensure_cols():
     """Add the execution columns to `ideas` if missing (idempotent)."""
@@ -143,7 +237,7 @@ def _ensure_cols():
         for r in db._rows("PRAGMA table_info(ideas)"):
             have.add(r["name"])
     add = {"venue": "TEXT", "exec_entry": "DOUBLE PRECISION",
-           "exec_ts": "BIGINT", "bars_held": "INTEGER"}
+           "exec_ts": "BIGINT", "bars_held": "INTEGER", "ref": "TEXT"}
     if not db.IS_PG:
         add = {k: ("REAL" if "DOUBLE" in v else "INTEGER" if v == "BIGINT" else v)
                for k, v in add.items()}
@@ -173,13 +267,6 @@ def work_orders(probe=False):
     rows = db._rows("SELECT * FROM ideas WHERE status='extracted'")
     n_work = n_noven = n_bad = 0
     for r in rows:
-        bsym = route(r["symbol"])
-        if not bsym:
-            print(f"  idea {r['id']} {r['symbol']}: no demo venue -> no_venue")
-            if not probe:
-                _update(r["id"], status="no_venue")
-            n_noven += 1
-            continue
         d = r["direction"]
         if d not in (1, -1) or not (r["entry"] and r["target"] and r["stop"]):
             print(f"  idea {r['id']} {r['symbol']}: incomplete bracket "
@@ -190,19 +277,44 @@ def work_orders(probe=False):
         # geometry on the ENTRY (price location is irrelevant for a resting order):
         # target ahead of entry, stop behind it, in the trade's direction.
         if (r["target"] - r["entry"]) * d <= 0 or (r["entry"] - r["stop"]) * d <= 0:
-            print(f"  idea {r['id']} {bsym}: bad bracket geometry "
+            print(f"  idea {r['id']} {r['symbol']}: bad bracket geometry "
                   f"(entry={r['entry']} tp={r['target']} sl={r['stop']} dir={d}) "
                   f"-> invalidated")
             if not probe:
                 _update(r["id"], status="invalidated")
             n_bad += 1
             continue
+
         side = "LONG" if d == 1 else "SHORT"
-        print(f"  idea {r['id']} {bsym}: ORDER {side} entry={r['entry']} "
-              f"tp={r['target']} sl={r['stop']} tf={r['timeframe']} -> pending")
+        bsym = route(r["symbol"])                      # 1) crypto -> binance_sim
+        if bsym:
+            print(f"  idea {r['id']} {bsym}: ORDER {side} entry={r['entry']} "
+                  f"tp={r['target']} sl={r['stop']} tf={r['timeframe']} -> pending (sim)")
+            if not probe:
+                _update(r["id"], status="pending", venue=VENUE)
+            n_work += 1
+            continue
+
+        esym = route_equity(r["symbol"])               # 2) equity -> Alpaca paper
+        if esym:
+            oid = _place_equity_bracket(r, esym, probe=probe)
+            if oid:
+                print(f"  idea {r['id']} {esym}: ALPACA {side} limit bracket "
+                      f"entry={r['entry']} tp={r['target']} sl={r['stop']} -> pending")
+                if not probe:
+                    _update(r["id"], status="pending", venue=ALPACA_VENUE,
+                            ref=f"order:{oid}")
+                n_work += 1
+            else:
+                if not probe:
+                    _update(r["id"], status="no_venue")
+                n_noven += 1
+            continue
+
+        print(f"  idea {r['id']} {r['symbol']}: no demo venue -> no_venue")  # 3) none
         if not probe:
-            _update(r["id"], status="pending", venue=VENUE)
-        n_work += 1
+            _update(r["id"], status="no_venue")
+        n_noven += 1
     return n_work, n_noven, n_bad
 
 
@@ -283,7 +395,10 @@ def resolve_open(probe=False):
     now_ms = int(time.time() * 1000)
     n_filled = n_resolved = n_expired = 0
     for r in rows:
-        res = _evaluate(r, now_ms)
+        if r.get("venue") == ALPACA_VENUE:            # real broker order
+            res = _resolve_equity(r)
+        else:                                         # binance_sim (kline walk)
+            res = _evaluate(r, now_ms)
         if not res:
             print(f"  idea {r['id']} {r['symbol']}: {r['status']} (no change)")
             continue
@@ -300,6 +415,10 @@ def resolve_open(probe=False):
             print(f"  idea {r['id']} {r['symbol']}: FILLED @ {res['exec_entry']} "
                   f"-> open")
             n_filled += 1
+        elif st == "invalidated":
+            print(f"  idea {r['id']} {r['symbol']}: order died (canceled/expired) "
+                  f"-> invalidated")
+            n_expired += 1
         if not probe:
             _update(r["id"], **res)
     return dict(filled=n_filled, resolved=n_resolved, expired=n_expired)
