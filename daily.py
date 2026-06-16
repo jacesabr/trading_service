@@ -57,8 +57,9 @@ def main():
     try:
         import ideas_exec
         ideas_exec._ensure_cols()
-        ires = ideas_exec.resolve_open()
-        out["ideas"] = {"resolved": ires}
+        nw, _, _ = ideas_exec.work_orders()      # extracted -> pending (resting orders)
+        rr = ideas_exec.resolve_open()           # fill pending + resolve open
+        out["ideas"] = {"pending": nw, **rr}
     except Exception as ex:
         out["ideas"] = {"error": str(ex)[:200]}
 
@@ -74,7 +75,9 @@ def main():
           + f" | eq_orders: resolved={o.get('resolved','?')} "
           f"placed={o.get('placed','?')}"
           + (f" ERR={o['error']}" if "error" in o else "")
-          + f" | ideas: resolved={iv.get('resolved','?')}"
+          + f" | ideas: pending={iv.get('pending','?')} "
+          f"filled={iv.get('filled','?')} resolved={iv.get('resolved','?')} "
+          f"expired={iv.get('expired','?')}"
           + (f" ERR={iv['error']}" if "error" in iv else ""))
     return out
 

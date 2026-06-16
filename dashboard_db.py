@@ -287,9 +287,10 @@ def ideas_feed():
     return jsonify({"last_update": int(time.time()), "ideas": rows,
                     "n": len(rows),
                     "extracted": st("extracted"), "needs_vision": st("needs_vision"),
-                    "open": st("open"), "resolved": len(res),
+                    "pending": st("pending"), "open": st("open"), "resolved": len(res),
                     "wins": wins, "pnl_bps": pnl,
-                    "dropped": st("dropped_tf") + st("invalidated") + st("no_venue"),
+                    "dropped": st("dropped_tf") + st("invalidated")
+                               + st("no_venue") + st("expired"),
                     "cap": 20})
 
 
@@ -369,9 +370,11 @@ table.ideas tr:hover td{background:#0f1828}
 .st-dropped_tf{background:#2a2f38;color:var(--dead)}
 .st-stored{background:#22304a;color:#9db4e0}
 .st-open{background:#13314d;color:#5fa8e0}
+.st-pending{background:#2d2740;color:#b39ddb}
 .st-resolved{background:#1d3a2e;color:var(--up)}
 .st-invalidated{background:#2a2f38;color:var(--dead)}
 .st-no_venue{background:#2a2f38;color:var(--dead)}
+.st-expired{background:#2a2f38;color:var(--dead)}
 .thumb{width:42px;height:26px;object-fit:cover;border-radius:3px;border:1px solid var(--line);vertical-align:middle}
 .bas{font-size:9px;color:var(--dim)}.bas-chart{color:var(--up)}.bas-generated{color:var(--live)}
 a.idea-link{color:var(--live);text-decoration:none}a.idea-link:hover{text-decoration:underline}
