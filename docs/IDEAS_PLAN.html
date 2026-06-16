@@ -43,7 +43,7 @@ a monitor fires the moment an idea is published, so we trade it on the demo acco
 <div class=panel>
 <table>
 <tr><th>Capability</th><th>Already built</th><th>Reused for this</th></tr>
-<tr><td>Scrapers (×3)</td><td>Firecrawl (primary, has monitor) · Apify · Tavily — all wired</td><td>Triple fallback so no single quota/outage stops ingestion. Tavily test ✓: cleanly returns <code>EXCHANGE:TICKER</code> symbols + chart-image URLs</td></tr>
+<tr><td>Scrapers</td><td>Firecrawl (primary, has monitor) · Apify · Tavily — URL-based, all wired. Octoparse — task-based (key stored)</td><td>3-way URL-fallback so no single quota/outage stops ingestion (Tavily ✓: returns <code>EXCHANGE:TICKER</code> + chart-image URLs). Octoparse best as a dedicated <i>listing-feed</i> task — needs a UI-built task + its API docs</td></tr>
 <tr><td>LLM</td><td>NVIDIA NIM (in-runtime, free)</td><td>Parse explicit levels OR <b>generate</b> a trade from a pure thesis</td></tr>
 <tr><td>Demo venues</td><td>Alpaca (equities+crypto, live), Deribit (options, unblocked), Binance testnet (pending key)</td><td>Route each idea to a venue and place a real bracket order</td></tr>
 <tr><td>Execution engine</td><td><code>equity_orders.py</code> (broker OCO), <code>alpaca_exec.py</code></td><td>Same bracket-order pattern, new signal source</td></tr>
