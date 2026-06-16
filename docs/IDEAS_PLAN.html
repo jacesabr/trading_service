@@ -1,0 +1,183 @@
+<!doctype html><meta charset=utf-8>
+<meta name=viewport content="width=device-width,initial-scale=1">
+<title>TradingView Ideas → Demo Execution — Build Plan</title>
+<style>
+:root{--bg:#0B1220;--panel:#121B2E;--line:#1E2A44;--ink:#D7E0EF;--dim:#8593AC;
+--up:#3FB68B;--dn:#E0556B;--live:#F5A623;--mono:'IBM Plex Mono',ui-monospace,monospace}
+*{box-sizing:border-box;margin:0}
+body{background:var(--bg);color:var(--ink);font:15px/1.55 Inter,system-ui,sans-serif;padding:24px;max-width:1080px;margin:auto}
+h1{font:600 22px var(--mono);letter-spacing:.02em;margin-bottom:4px}
+h2{font:600 15px var(--mono);text-transform:uppercase;letter-spacing:.05em;color:var(--live);
+   border-bottom:1px solid var(--line);padding-bottom:6px;margin:30px 0 12px}
+h3{font:600 14px var(--mono);color:var(--ink);margin:16px 0 6px}
+.sub{color:var(--dim);font-size:13px;margin-bottom:8px}
+p{margin:8px 0}.lead{color:var(--dim)}
+ul,ol{margin:8px 0 8px 22px}li{margin:4px 0}
+code{font:12px var(--mono);background:#0f1828;border:1px solid var(--line);padding:1px 5px;border-radius:4px;color:#9db4e0}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 18px;margin:12px 0}
+.flow{font:12px/1.7 var(--mono);background:#0f1828;border:1px solid var(--line);border-radius:8px;padding:14px;white-space:pre-wrap;color:var(--ink);overflow-x:auto}
+table{width:100%;border-collapse:collapse;font-size:13px;margin:10px 0}
+th,td{text-align:left;padding:6px 8px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font:600 11px var(--mono);text-transform:uppercase;letter-spacing:.04em}
+.pos{color:var(--up)}.neg{color:var(--dn)}.warn{color:var(--live)}
+.tag{font:600 10px var(--mono);padding:2px 7px;border-radius:4px;white-space:nowrap}
+.t-done{background:#1d3a2e;color:var(--up)}.t-now{background:#3a3320;color:var(--live)}.t-next{background:#22304a;color:#9db4e0}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.note{border-left:2px solid var(--live);background:#1a1710;padding:8px 12px;border-radius:0 6px 6px 0;font-size:13px;color:var(--dim);margin:10px 0}
+.k{color:var(--dim)} b{color:var(--ink)}
+@media(max-width:720px){.grid2{grid-template-columns:1fr}}
+</style>
+
+<h1>TradingView Ideas → Demo Execution Engine</h1>
+<div class=sub>Build plan · trading_service · drafted 2026-06-16 · paper / demo only</div>
+
+<p class=lead>Turn the world's stream of community trading ideas into a live, <b>broker-executed</b>,
+self-scoring track record. Every published idea becomes a signal; a real demo account is the
+honest judge (real fills, real spread, real P&amp;L); the post's engagement (boosts, comments,
+author) becomes a <b>feature set we test</b> — does the crowd's attention actually predict edge?
+This is the lab's existing philosophy — <i>collect a signal → execute on a real service → let the
+DB decide</i> — pointed at a brand-new, effectively unlimited signal source, in <b>realtime</b>:
+a monitor fires the moment an idea is published, so we trade it on the demo account within seconds.</p>
+
+<h2>1 · Why this fits what we already have</h2>
+<div class=panel>
+<table>
+<tr><th>Capability</th><th>Already built</th><th>Reused for this</th></tr>
+<tr><td>Scrapers</td><td>Firecrawl (primary) + Apify (fallback)</td><td>Pull the paginated ideas feed every 6h; fail over to avoid overusing one</td></tr>
+<tr><td>LLM</td><td>NVIDIA NIM (in-runtime, free)</td><td>Parse explicit levels OR <b>generate</b> a trade from a pure thesis</td></tr>
+<tr><td>Demo venues</td><td>Alpaca (equities+crypto, live), Deribit (options, unblocked), Binance testnet (pending key)</td><td>Route each idea to a venue and place a real bracket order</td></tr>
+<tr><td>Execution engine</td><td><code>equity_orders.py</code> (broker OCO), <code>alpaca_exec.py</code></td><td>Same bracket-order pattern, new signal source</td></tr>
+<tr><td>Store + dashboard</td><td><code>executions</code> table, LIVE/PAPER dashboard split</td><td>New <code>ideas</code> table + an Ideas board (top 500, most-recent)</td></tr>
+<tr><td>Ingestion</td><td>Firecrawl <b>monitor</b> (webhook on change) + Render cron</td><td><b>Realtime</b>: new-idea webhook fires processing in seconds; cron poll backfills</td></tr>
+</table>
+<p class=k>Net new code is small: a scraper adapter, an LLM extractor/generator, a symbol→venue router, one table, one dashboard board. Everything downstream already exists.</p>
+</div>
+
+<h2>2 · Data flow</h2>
+<div class=flow>┌─ REALTIME: fires on each new idea (monitor webhook) · poll = backfill ──────┐
+│                                                                            │
+│  0. MONITOR  Firecrawl monitors newest / hottest / editors-picks feeds.    │
+│              New post → webhook (seconds, not hours) → run steps 2–10 for   │
+│              that idea now.  A periodic poll (Firecrawl→Apify) backfills.   │
+│                          │                                                 │
+│  1. LIST     in.tradingview.com/ideas/page-N/?sort=recent_extended         │
+│              (backfill path) Per card: title · thesis snippet · symbol ·    │
+│              author · published · boosts · comments · idea-url.             │
+│                          │                                                 │
+│  2. DEDUPE   skip urls already in `ideas`                                  │
+│                          │                                                 │
+│  3. OPEN     fetch EACH idea's FULL page → full analysis text + the        │
+│     EACH       high-res CHART IMAGE url (the levels live on the chart, not │
+│     IDEA       in the card text).                                          │
+│                          │                                                 │
+│  4. READ     ── multimodal ──                                              │
+│     THE      • TEXT: full thesis/analysis                                  │
+│     CHART    • VISION model on the chart IMAGE → read the DRAWN levels:    │
+│                horizontal entry/target/stop lines + their price labels,    │
+│                long/short bias from the projected path, zones/FVG/fibs,    │
+│                the chart's symbol + timeframe header.                      │
+│              → fuse text + image into one structured call.                 │
+│                          │                                                 │
+│  5. EXTRACT/ { symbol, direction, entry, target, stop, timeframe,         │
+│     GENERATE   basis:'chart'|'text'|'generated', confidence }             │
+│              · levels readable on chart/text → use them                    │
+│              · only a thesis, no levels       → GENERATE from thesis +     │
+│                live price + ATR (our model, flagged as such)               │
+│                          │                                                 │
+│  6. ROUTE    TradingView symbol → venue + instrument                       │
+│              (BINANCE:BTCUSDT→Binance/Alpaca crypto; NASDAQ:AAPL→Alpaca;   │
+│               NSE:NIFTY→unsupported→record-only; DERIBIT options→Deribit)  │
+│                          │                                                 │
+│  7. EXECUTE  place a REAL demo BRACKET order (entry+TP+SL, broker OCO).    │
+│              Bounded: qty small · dedup per idea · skip unsupported         │
+│                          │                                                 │
+│  8. TRACK    record in `ideas` + `executions`: real entry/exit fills,      │
+│              outcome, P&L, chart-image url, AND engagement (boosts/comments)│
+│                          │                                                 │
+│  9. ANALYSE  do boosts / comments / author / basis predict win-rate?       │
+│              author leaderboard + quality filter.                          │
+│                          │                                                 │
+│ 10. SHOW     Ideas board: top 500 most-recent, engagement + live P&L.      │
+└────────────────────────────────────────────────────────────────────────────┘</div>
+<div class=note><b>The chart image is where the trade lives.</b> Listing cards only carry the thesis snippet; the entry / target / stop are almost always <i>drawn</i> on the annotated chart (horizontal lines + price labels, projected path, FVG/fib zones). So step 3–4 must open each idea page and run a <b>vision model on the image</b> — text-only scraping would miss the actual levels. This is the single hardest, must-validate-first part of the build.</div>
+
+<h2>3 · Components to build</h2>
+<div class=grid2>
+<div class=panel><h3>a · <code>ideas_ingest.py</code> — live monitor + poll</h3>
+<p class=k><b>Push, not just pull.</b> Use Firecrawl's <b>monitor</b> on several feeds at once — <code>newest</code>, <code>hottest</code>, <code>editors-picks</code> — so a new post fires a <b>webhook the moment it appears</b> (an AI judge filters noise/format-only changes). A small endpoint receives it and kicks off processing immediately — important because short-timeframe ideas have a narrow entry window a 6h poll would miss. A periodic poll (Firecrawl primary / <b>Apify</b> fallback, walking <code>/ideas/page-N/?sort=recent_extended</code>) runs underneath as a <b>backfill/safety net</b> so nothing is dropped if a webhook is missed. Incremental: dedupe by url.</p></div>
+
+<div class=panel><h3>b · <code>ideas_vision.py</code> (MULTIMODAL extract / generate)</h3>
+<p class=k><b>The keystone — and it must read the chart image.</b> Per idea: fetch the full page (text) + the chart image, then one strict-JSON call to a <b>vision-capable</b> model. It reads the <i>drawn</i> levels off the chart (entry/target/stop lines + price labels, projected path → direction, zones), cross-checks against the text, and falls back to <b>generating</b> levels from the thesis + live price + ATR when nothing is drawn. Output tags <code>basis: chart | text | generated</code> so a real author level is never confused with our own. Model: a NIM vision-language model (or Claude/other VLM) — needs validating on real charts first.</p></div>
+
+<div class=panel><h3>c · <code>ideas_router.py</code></h3>
+<p class=k>Map a TradingView symbol (<code>EXCHANGE:TICKER</code>) to a venue + instrument, with an honest <b>coverage table</b>. Unsupported markets (e.g. NSE/Indian equities) are <i>recorded but not executed</i> — we still track whether the idea would have worked (sim), just labelled "no demo venue".</p></div>
+
+<div class=panel><h3>d · <code>ideas_exec.py</code> + <code>ideas</code> table</h3>
+<p class=k>Reuse the bracket-OCO pattern (broker holds the exit). New table stores the social metadata: <code>url, author, symbol, thesis, boosts, comments, published_ts, params, basis, exec_id, outcome, ret_bps</code>. Hooks into the existing <code>executions</code> table for the fills.</p></div>
+</div>
+
+<h2>4 · The research angle — is the crowd an edge?</h2>
+<div class=panel>
+<p>The reason to store <b>boosts</b> and <b>comments</b> is a real, testable hypothesis: <i>does engagement predict accuracy?</i> Once we have enough resolved idea-trades we can ask —</p>
+<ul>
+<li><b>Author edge:</b> which authors beat random on real fills? (a leaderboard, min-N gated)</li>
+<li><b>Boost threshold:</b> do ideas above X boosts win more than below? Or is it contrarian (hyped = crowded = worse)?</li>
+<li><b>Explicit vs generated:</b> do author-printed levels beat AI-generated-from-thesis?</li>
+<li><b>Symbol / timeframe:</b> where do community ideas actually carry — crypto vs equities, intraday vs swing?</li>
+</ul>
+<p class=k>Every one of these is the same leak-safe, let-the-DB-decide discipline the lab already runs — just with social features as the explanatory variables. Disciplined rejection (most ideas are noise) is the expected, honest outcome — the filter is the product.</p>
+</div>
+
+<h2>5 · Venue routing &amp; coverage (honest)</h2>
+<div class=panel>
+<table>
+<tr><th>Idea market</th><th>Demo venue</th><th>Order type</th><th>Status</th></tr>
+<tr><td>US equities / ETFs / indices</td><td>Alpaca paper</td><td>Bracket OCO</td><td><span class="tag t-done">ready</span> (equity_orders.py)</td></tr>
+<tr><td>Crypto (BTC/ETH/majors)</td><td>Binance testnet (best) / Alpaca crypto</td><td>Bracket / managed exit</td><td><span class="tag t-now">Binance key pending; Alpaca usable now</span></td></tr>
+<tr><td>Crypto options</td><td>Deribit testnet</td><td>Limit on option</td><td><span class="tag t-now">unblocked; order layer next</span></td></tr>
+<tr><td>FX / metals</td><td>OANDA practice</td><td>Bracket</td><td><span class="tag t-next">needs signup</span></td></tr>
+<tr><td>Indian equities (NSE/BSE), other non-US</td><td><i>none</i></td><td>—</td><td><span class="tag t-next">record-only (sim track), no demo fill</span></td></tr>
+</table>
+<p class=k>Coverage is honest up front: a large share of TradingView ideas (esp. NSE on the .in site) have no demo venue — those are tracked as sim, not real fills, and clearly labelled. The real-fill subset is what carries credibility.</p>
+</div>
+
+<h2>6 · Safety floors (unchanged)</h2>
+<ul>
+<li><b>Demo / paper only.</b> Real money still requires <code>LIVE_BUDGET_ARMED=1</code> — left off.</li>
+<li><b>Bounded:</b> top 500 most-recent idea-trades; small fixed qty; one order per idea (deduped); broker-managed OCO exits so nothing accumulates.</li>
+<li><b>AI-generated levels are flagged</b> — never presented as the author's call.</li>
+<li><b>Per-run cap</b> on new executions so a busy feed can't fan out unbounded.</li>
+</ul>
+
+<h2>7 · Phased build</h2>
+<div class=panel>
+<table>
+<tr><th>Phase</th><th>Scope</th><th>Proves</th></tr>
+<tr><td><b>P1 · Scrape + store</b></td><td>Dual-scraper feed → open each idea page → store text + <b>chart-image url</b> + engagement in <code>ideas</code> (no execution). 6h cron.</td><td>We can pull full pages + images incrementally and reliably.</td></tr>
+<tr><td><b>P2 · Vision extraction</b> <span class="tag t-now">highest risk</span></td><td>Vision model reads drawn levels off real charts → structured params (+ generate-from-thesis fallback). <b>Validate by hand on ~30 real ideas</b> before trusting it.</td><td>The chart→levels read is accurate enough to trade. If not, the whole idea stalls here — so we prove it first.</td></tr>
+<tr><td><b>P3 · Demo execution</b></td><td>Router + bracket orders for the supported subset (start: US equities + crypto).</td><td>Real fills + real P&L flowing, idea-tagged.</td></tr>
+<tr><td><b>P4 · Engagement analytics</b></td><td>Author leaderboard, boost/comment vs win-rate, quality filter.</td><td>Whether the crowd is signal or noise — and who to trust.</td></tr>
+<tr><td><b>P5 · Ideas board</b></td><td>Dashboard board: top 500 recent, engagement + P&L, author edge.</td><td>The public, verifiable track record of community ideas.</td></tr>
+</table>
+<p class=k>Each phase is independently useful and shippable; P1–P2 de-risk the only genuinely uncertain part (extraction) before any execution code.</p>
+</div>
+
+<h2>8 · Bonus: thesis → AI-generated idea</h2>
+<div class=panel>
+<p>Many posts are pure <b>market thesis</b> (no levels) — e.g. <i>"Bitcoin holds firm near $63K as traders await catalysts… the $63–64K range suggests short-term balance."</i> Instead of discarding these, the LLM <b>generates</b> a concrete, executable trade from the thesis + the live chart context (price, recent ATR/zones): direction, entry, a target and stop sized to volatility. We then trade <i>our</i> interpretation of the thesis on the demo account and score it — separately tagged from explicit-level ideas. This turns the entire qualitative-commentary half of the feed into testable signals, and doubles as a measure of <b>how good our own thesis→trade generation is</b>.</p>
+</div>
+
+<h2>9 · Open decisions (your call)</h2>
+<ul>
+<li><b>Timeframe → hold/exit:</b> map the idea's chart TF (15m, 4h, 1D) to a max-hold + how we treat "swing" ideas that run days. Default: TF-scaled max bars, broker OCO does the rest.</li>
+<li><b>One order vs scaling:</b> single bracket per idea (simple) — recommended to start.</li>
+<li><b>Non-US coverage:</b> record-only sim for unsupported markets, or skip entirely? (recommend record-only — it still answers "is the author good?").</li>
+<li><b>Generated-level aggression:</b> how wide a stop/target the LLM may set (ATR multiples) — a guardrail so it can't invent absurd brackets.</li>
+<li><b>Vision model:</b> NIM VLM vs Claude vs another — pick on a head-to-head accuracy test reading real annotated charts (this gates the whole project).</li>
+<li><b>Scraper split:</b> Firecrawl primary / Apify fallback ratio + the 6h cadence (confirmed).</li>
+</ul>
+
+<div class=note><b>Recommendation — de-risk the chart read first.</b> P1: scrape a real day of ideas, opening each page and saving the <b>chart images</b> + text. P2: run the vision model on ~30 of them and check by hand whether it pulls the right entry/target/stop off the chart. <b>That single test decides the project</b> — if the vision read is reliable, P3 execution is fast (the bracket-order layer already exists); if it's shaky, we adjust (crop to the price axis, prefer text levels, lower confidence → record-only) before spending on execution. Near-zero risk, and it confronts the hardest part immediately.</div>
+
+<p class=k style="margin-top:24px">Served from <code>docs/IDEAS_PLAN.html</code>. Companion to <a href="/docs" style="color:var(--live)">/docs</a> (the lab architecture).</p>
+</html>

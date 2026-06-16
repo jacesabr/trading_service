@@ -499,16 +499,26 @@ def admin_page():
     return Response(ADMIN_HTML, mimetype="text/html")
 
 
+def _serve_doc(filename, missing):
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docs",
+                        filename)
+    if not os.path.exists(path):
+        return Response(missing, 404)
+    with open(path, encoding="utf-8") as f:
+        return Response(f.read(), mimetype="text/html")
+
+
 @app.route("/docs")
 def docs_page():
     """The living infrastructure document, served from disk so edits show live.
     Maintained by the daily agent — see the maintenance contract inside it."""
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                        "docs", "INFRA.html")
-    if not os.path.exists(path):
-        return Response("INFRA.html missing", 404)
-    with open(path, encoding="utf-8") as f:
-        return Response(f.read(), mimetype="text/html")
+    return _serve_doc("INFRA.html", "INFRA.html missing")
+
+
+@app.route("/plan")
+def plan_page():
+    """The TradingView-ideas → demo-execution build plan."""
+    return _serve_doc("IDEAS_PLAN.html", "IDEAS_PLAN.html missing")
 
 
 if __name__ == "__main__":
