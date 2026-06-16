@@ -169,8 +169,8 @@ a monitor fires the moment an idea is published, so we trade it on the demo acco
 
 <h2>9 · Open decisions (your call)</h2>
 <ul>
-<li><b>Timeframe → hold/exit:</b> map the idea's chart TF (15m, 4h, 1D) to a max-hold + how we treat "swing" ideas that run days. Default: TF-scaled max bars, broker OCO does the rest.</li>
-<li><b>One order vs scaling:</b> single bracket per idea (simple) — recommended to start.</li>
+<li><b>One trade per idea — NO consensus.</b> Ideas are on different timeframes/setups, so there is nothing comparable to "vote" on. Each idea is an <b>independent</b> trade: its own direction, entry, target, stop, and timeframe → its own hold. We execute and score each on its own; the broker OCO closes it whenever its TP/SL hits, be that hours or days. A per-symbol cap (e.g. ≤2 open at once) is only a volume guard, not a vote.</li>
+<li><b>Timeframe → max-hold:</b> the idea's chart TF sets a max-hold cap (intraday closes same session, swing runs days) after which we flatten if neither TP nor SL hit. The OCO does the rest.</li>
 <li><b>Non-US coverage:</b> record-only sim for unsupported markets, or skip entirely? (recommend record-only — it still answers "is the author good?").</li>
 <li><b>Generated-level aggression:</b> how wide a stop/target the LLM may set (ATR multiples) — a guardrail so it can't invent absurd brackets.</li>
 <li><b>Vision model:</b> NIM VLM vs Claude vs another — pick on a head-to-head accuracy test reading real annotated charts (this gates the whole project).</li>
