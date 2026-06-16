@@ -48,18 +48,19 @@ so new cards appear. Binance geo-block (HTTP 451) on US regions → keep the wor
 in **frankfurt** (or use `data.binance.vision`, already data.py's source).
 
 ## TradingView Ideas (run by hand, 1–2×/day in Claude Code)
-`ideas_mvp.py` scrapes community ideas off TradingView (Tavily `/extract` on the
-listing feeds), derives each chart-image URL from the slug, extracts trade params,
-and stores them in the **`ideas`** table; the dashboard shows them at the top via
-`/api/ideas`. Vision (reading levels off the chart) is **manual** — Claude Code
-reads the images and writes levels back (`--set-levels`); set `ANTHROPIC_API_KEY`
-or `NVIDIA_API_KEY` to automate it later. `ideas_exec.py` then executes the
-chart-read brackets on **real Binance public data** (`binance_sim`: market-enter
-at the live price, resolve TP/SL on 1m klines, long+short) — keyless, runs from
-any region. Full procedure: [tradingview_automation_run.md](tradingview_automation_run.md).
-Needs `TAVILY_API_KEY` in the shell/env (`BINANCE_REST` optional, defaults to
-`api.binance.com`). Paper/demo only; **≤20 concurrent open trades**, **any
-timeframe** (TF sets the max-hold, never drops an idea).
+One entry-point: **`python tradingview_ideas.py <scrape|vision|set|run|show|all>`**
+(implementation in the `ideas/` package). `scrape` pulls community ideas off
+TradingView (Tavily `/extract` on the listing feeds), derives each chart-image URL
+from the slug, extracts params, stores them in the **`ideas`** table; the dashboard
+shows them at the top via `/api/ideas`. Vision (reading levels off the chart) is
+**manual** — Claude Code reads the images and writes levels back (`set`); set
+`ANTHROPIC_API_KEY`/`NVIDIA_API_KEY` to automate later. `run` executes the
+chart-read brackets on **real Binance public data** (`binance_sim`: limit/stop
+order at the author's entry, fill + resolve TP/SL on 1m klines, long+short) —
+keyless, any region. Full procedure: [tradingview_automation_run.md](tradingview_automation_run.md).
+Needs `TAVILY_API_KEY` (`BINANCE_REST` optional, defaults to `api.binance.com`).
+`daily.py` calls the execute step every cron cycle so resting orders fill/resolve
+unattended. Paper/demo only; **≤20 concurrent open trades**, **any timeframe**.
 
 ## DB schema (created on first `db.init()`)
 `signals · bets · trades · executions · experiments · strategy_versions · lessons`

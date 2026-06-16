@@ -12,13 +12,13 @@ track record. **Paper / demo only** — the live path stays gated off.
 
 > **No API keys yet — by design.** The vision step is done manually by Claude
 > Code reading the chart images. The code is already wired for an automated VLM:
-> set `ANTHROPIC_API_KEY` (or `NVIDIA_API_KEY`) and `ideas_mvp.py` will read
+> set `ANTHROPIC_API_KEY` (or `NVIDIA_API_KEY`) and `ideas/scrape.py` will read
 > charts itself, no manual loop. We stay manual until the idea proves it has edge.
 
 ---
 
 ## What's built (state — verified 2026-06-16)
-- **`ideas_mvp.py`** — scrape + extract + store. Pulls 4 TradingView listing
+- **`ideas/scrape.py`** — scrape + extract + store. Pulls 4 TradingView listing
   feeds via **Tavily** (`/extract`), parses each idea's symbol / full analysis /
   author / comments straight from the listing markdown, derives the **chart image
   URL from the slug** (`<id>` → `https://s3.tradingview.com/<c>/<id>_big.png`, no
@@ -28,12 +28,12 @@ track record. **Paper / demo only** — the live path stays gated off.
 - **dashboard** — `/api/ideas` + a **TradingView Ideas** board at the top of the
   main page (chart thumbnail, symbol, dir, entry/target/stop, TF, basis, conf,
   status, outcome, author, boosts, link).
-- **`ideas_exec.py`** — P3 demo execution. Routes each `extracted` idea's symbol
+- **`ideas/execute.py`** — P3 demo execution. Routes each `extracted` idea's symbol
   to a Binance USDT pair, market-enters at the live price, and resolves the
   bracket against real 1m klines (no-lookahead). Venue `binance_sim` (real prices,
   honest sim — not a broker fill). Long + short both work.
 - **status lifecycle:** `needs_vision` → (chart read) → `extracted`
-  → (`ideas_exec`) → `open` → `resolved` (target/stop/flat). Side paths:
+  → (`run`) → `pending` → `open` → `resolved` (target/stop/flat). Side paths:
   `invalidated` (market moved past the level), `no_venue` (unsupported symbol).
 - **Not built yet (P4+):** engagement analytics (does boosts/author predict
   win-rate). Real broker fills for shorts (futures testnet from Frankfurt) is the
@@ -45,7 +45,7 @@ track record. **Paper / demo only** — the live path stays gated off.
 
 ### 0. Orient
 ```bash
-python ideas_mvp.py --show          # current ideas table + statuses
+python tradingview_ideas.py show    # current ideas table + statuses
 ```
 Set the scraper key for this shell (local; on Render it's a service env var):
 ```bash
@@ -54,7 +54,7 @@ export TAVILY_API_KEY=tvly-...      # from .env
 
 ### 1. Scrape new ideas
 ```bash
-python ideas_mvp.py --limit 10      # scrape up to 10 NEW ideas, store them
+python tradingview_ideas.py scrape --limit 10   # scrape up to 10 NEW ideas, store them
 ```
 - At the **20-open cap** it prints `[cap] … skipping scrape` and stops — that's
   the compute governor working, not an error.
@@ -66,7 +66,7 @@ python ideas_mvp.py --limit 10      # scrape up to 10 NEW ideas, store them
 ### 2. Read the charts (Claude Code vision — the manual keystone)
 List what needs a chart read:
 ```bash
-python ideas_mvp.py --list-vision   # JSON: id, symbol, chart_image_url, thesis
+python tradingview_ideas.py vision  # JSON: id, symbol, chart_image_url, thesis
 ```
 For **each** idea in that list, in this Claude Code session:
 1. **Download** the chart image (the URL is in the JSON):
@@ -82,7 +82,7 @@ For **each** idea in that list, in this Claude Code session:
    - zones / FVG / fib levels.
 3. **Write the levels back:**
    ```bash
-   python ideas_mvp.py --set-levels <id> \
+   python tradingview_ideas.py set <id> \
      --tf 4h --direction -1 \
      --entry 67000 --target 58000 --stop 68200 --confidence 0.65
    ```
@@ -95,10 +95,10 @@ For **each** idea in that list, in this Claude Code session:
      + the visible price + structure, and tag it `--basis generated` so it's never
      confused with the author's own call.
 
-### 3. Execute + resolve (P3 — `ideas_exec.py`)
+### 3. Execute + resolve (P3 — `tradingview_ideas.py run`)
 ```bash
-python ideas_exec.py --probe        # preview: route + which open / invalidate
-python ideas_exec.py                # open new `extracted` ideas + resolve open ones
+python tradingview_ideas.py run --probe   # preview: route + which fill / invalidate
+python tradingview_ideas.py run           # place resting orders + fill/resolve open
 ```
 - **Open:** each `extracted` idea is routed (symbol → Binance USDT pair) and
   **market-entered at the live Binance price now** (the realtime intent); the
@@ -111,7 +111,7 @@ python ideas_exec.py                # open new `extracted` ideas + resolve open 
   target → `target` (win), the stop → `stop` (loss); a bar straddling both is
   scored a **loss** (pessimistic, never inflate). Past the TF's max-hold with no
   touch → `flat` at the last close. Long **and** short both resolve correctly.
-- Re-run `ideas_exec.py` each session (or on a cron) — open brackets resolve over
+- Re-run `tradingview_ideas.py run` each session (or on a cron) — orders fill + brackets resolve over
   the following hours/days as price reaches a level. **No babysitting.**
 
 > **`binance_sim` = honest sim, not a broker fill.** Entry + resolution use REAL
@@ -122,7 +122,7 @@ python ideas_exec.py                # open new `extracted` ideas + resolve open 
 
 ### 4. Verify + ship
 ```bash
-python ideas_mvp.py --show          # confirm the rows look right
+python tradingview_ideas.py show    # confirm the rows look right
 ```
 The board updates live on the dashboard (open trades show `live @ <fill>`,
 resolved show outcome + bps, with a win/PnL summary line). Commit + deploy as in
@@ -136,7 +136,7 @@ Render deploys).
   (`status='open'`), checked before any scrape (compute governor).
 - **Timeframe-agnostic** — trades of ANY timeframe are taken; the TF only sets the
   max-hold downstream (a 1d idea holds days, a 5m idea minutes-to-hours). It never
-  drops an idea. (Reinstate a cap by setting `MAX_TF_MIN` in `ideas_mvp.py`.)
+  drops an idea. (Reinstate a cap by setting `MAX_TF_MIN` in `ideas/scrape.py`.)
 - **Demo / paper only** — real money still needs `LIVE_BUDGET_ARMED=1` (off).
 - **AI/agent-generated levels are tagged** `basis=generated` — never presented as
   the author's call. Chart-read levels are `basis=chart`; in-text are `basis=text`.
@@ -148,20 +148,20 @@ The manual chart-read **is the validation gate** for whether an automated VLM is
 worth paying for. Once a batch of chart-read ideas resolves and shows the read is
 reliable + the ideas carry edge:
 1. set `ANTHROPIC_API_KEY` (Claude `claude-haiku-4-5` vision, already wired in
-   `ideas_mvp._vision_extract`) or `NVIDIA_API_KEY` for a free NIM VLM,
-2. `ideas_mvp.py` then reads charts itself on every run — the manual step in §2
+   `ideas/scrape.py` `_vision_extract`) or `NVIDIA_API_KEY` for a free NIM VLM,
+2. `ideas/scrape.py` then reads charts itself on every run — the manual step in §2
    disappears, and this can move to a Render cron like `daily.py`.
 
-## Commands
+## Commands (one entry-point: `tradingview_ideas.py`)
 ```
-python ideas_mvp.py --limit N        scrape N new ideas (default 10)
-python ideas_mvp.py --probe          dry run, no DB writes
-python ideas_mvp.py --show           print the ideas table
-python ideas_mvp.py --list-vision    ideas awaiting a chart read (JSON)
-python ideas_mvp.py --set-levels ID --tf 4h --direction -1 \
+python tradingview_ideas.py scrape --limit N   scrape N new ideas (default 10)
+python tradingview_ideas.py vision             ideas awaiting a chart read (JSON)
+python tradingview_ideas.py show               print the ideas table
+python tradingview_ideas.py set ID --tf 4h --direction -1 \
     --entry E --target T --stop S [--basis chart|generated|text] [--confidence C]
-python ideas_exec.py                 open extracted + resolve open (real Binance data)
-python ideas_exec.py --probe         preview routing / opens, no DB writes
-python ideas_exec.py --open          only open new extracted ideas
-python ideas_exec.py --resolve       only resolve open idea-trades
+python tradingview_ideas.py run                place orders + fill/resolve (test venues)
+python tradingview_ideas.py run --probe        preview routing, no DB writes
+python tradingview_ideas.py run --open         only place resting orders
+python tradingview_ideas.py run --resolve      only fill pending + resolve open
+python tradingview_ideas.py all --limit N      scrape then run, in one go
 ```

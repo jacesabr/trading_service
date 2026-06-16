@@ -390,7 +390,7 @@ a.idea-link{color:var(--live);text-decoration:none}a.idea-link:hover{text-decora
     <th>TF</th><th>basis</th><th>conf</th><th>status</th><th>outcome</th>
     <th>author</th><th>boosts</th><th>idea</th>
   </tr></thead><tbody id=ideas_body></tbody></table>
-  <div class=empty id=ideas_empty style="display:none">No ideas scraped yet — run <code>python ideas_mvp.py</code>.</div>
+  <div class=empty id=ideas_empty style="display:none">No ideas scraped yet — run <code>python tradingview_ideas.py all</code>.</div>
 </div>
 
 <h2 class=sec id=sec_live><span class="livedot"></span>LIVE — real broker orders <small>· actual filled demo trades (Alpaca paper), most → least profitable</small></h2>

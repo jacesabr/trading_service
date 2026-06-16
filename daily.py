@@ -55,7 +55,7 @@ def main():
     # Resolution is pure price data, so it runs unattended here every cycle; the
     # scrape + chart-read (which need Claude Code) stay in the manual runbook.
     try:
-        import ideas_exec
+        from ideas import execute as ideas_exec
         ideas_exec._ensure_cols()
         nw, _, _ = ideas_exec.work_orders()      # extracted -> pending (resting orders)
         rr = ideas_exec.resolve_open()           # fill pending + resolve open

@@ -1,4 +1,6 @@
-"""ideas_exec.py — P3 demo execution for TradingView Ideas (limit-entry bracket).
+"""ideas/execute.py — P3 demo execution for TradingView Ideas (limit-entry bracket).
+(Driven by the root entry-point `tradingview_ideas.py`; not run directly.)
+
 
 Turns `extracted` ideas (a chart-read bracket: direction + entry/target/stop) into
 tracked demo trades and resolves them against REAL Binance price data. Entries are
@@ -97,7 +99,9 @@ def klines_1m(binance_sym, start_ms, end_ms):
 
 
 # ─── Router ───────────────────────────────────────────────────────────────────
-_BASE_ALIASES = {"XBT": "BTC"}
+_BASE_ALIASES = {"XBT": "BTC", "SOLANA": "SOL", "BITCOIN": "BTC",
+                 "ETHEREUM": "ETH", "RIPPLE": "XRP", "LITECOIN": "LTC",
+                 "DOGECOIN": "DOGE"}
 
 
 def route(symbol):
@@ -117,9 +121,11 @@ def route(symbol):
             s = s[: -len(q)]
             break
     s = _BASE_ALIASES.get(s, s)
-    # supported liquid crypto bases (demo). Extend as venues grow.
+    # supported liquid crypto bases with a Binance USDT pair. Extend as needed.
     supported = {"BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "ADA", "AVAX",
-                 "LINK", "MATIC", "LTC", "DOT", "TRX"}
+                 "LINK", "MATIC", "LTC", "DOT", "TRX", "ORDI", "NEAR", "APT",
+                 "ARB", "OP", "SUI", "INJ", "TIA", "SEI", "PEPE", "WIF", "SHIB",
+                 "ATOM", "FIL", "RUNE", "AAVE", "UNI", "ETC", "BCH"}
     if s in supported:
         return s + "USDT"
     return None

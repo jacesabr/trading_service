@@ -1,4 +1,6 @@
-"""ideas_mvp.py — TradingView Ideas P1+P2 MVP: scrape, extract, store.
+"""ideas/scrape.py — TradingView Ideas P1+P2: scrape, extract, store.
+(Driven by the root entry-point `tradingview_ideas.py`; not run directly.)
+
 
 Fetches public trading ideas from TradingView via Tavily, extracts trade params
 (direction/entry/target/stop) from page text (and chart image if
