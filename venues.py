@@ -21,7 +21,6 @@ Credentials (set on the Render worker):
 """
 import json
 import os
-import time
 import urllib.request
 
 
@@ -88,8 +87,6 @@ class AlpacaVenue(Venue):
     name = "alpaca"
     MAP = {"BTCUSDT": "BTC/USD", "ETHUSDT": "ETH/USD",
            "SOLUSDT": "SOL/USD", "DOGEUSDT": "DOGE/USD", "XRPUSDT": "XRP/USD"}
-    PAPER = "https://paper-api.alpaca.markets/v2"
-    ORDER_NOTIONAL = float(os.environ.get("ALPACA_ORDER_NOTIONAL", "12"))  # >$10 crypto floor
 
     def available(self):
         return bool(os.environ.get("ALPACA_KEY") and os.environ.get("ALPACA_SECRET"))
@@ -119,43 +116,16 @@ class AlpacaVenue(Venue):
         except Exception:
             return None
 
-    def place_paper_order(self, sym, side, notional=None, poll=8):
-        """REAL paper market order on Alpaca. Returns dict(fill, ref=order_id,
-        status) or None. Polls briefly for the average fill price (crypto fills
-        near-instant 24/7). Public so a one-off verifier can call it directly."""
-        notional = self.ORDER_NOTIONAL if notional is None else notional
-        body = {"symbol": sym, "notional": str(notional), "side": side,
-                "type": "market", "time_in_force": "gtc"}
-        try:
-            o = _http(f"{self.PAPER}/orders", headers=self._hdr(),
-                      method="POST", body=body)
-        except Exception as e:
-            print(f"  [alpaca] order POST failed {sym} {side}: {str(e)[:120]}")
-            return None
-        oid = o.get("id")
-        for _ in range(poll):                        # poll for the fill price
-            fap = o.get("filled_avg_price")
-            if fap:
-                return dict(fill=float(fap), ref=str(oid),
-                            status=o.get("status", "filled"))
-            time.sleep(1)
-            try:
-                o = _http(f"{self.PAPER}/orders/{oid}", headers=self._hdr())
-            except Exception:
-                break
-        # accepted but not yet filled within the poll window
-        return dict(fill=None, ref=str(oid), status=o.get("status", "pending"))
-
     def open_trade(self, s, direction, stop, target, kind):
         sym = self.symbol_for(s)
         if not sym:
             return None
-        # Phase 2: real order when armed, long crypto only; else quote-cross.
-        if self._place_orders_on() and direction > 0:
-            res = self.place_paper_order(sym, "buy")
-            if res and res.get("fill"):
-                return dict(fill=res["fill"], ref=f"order:{res['ref']}")
-            # not filled in window / failed -> fall back, don't break the runner
+        # When ALPACA_PLACE_ORDERS=1, REAL filled orders are handled out-of-band
+        # by alpaca_exec (long-crypto round-trips with a managed close leg), so
+        # skip the quote-cross here to avoid double-recording. Unarmed -> the
+        # Phase-1 quote-cross sim as before.
+        if self._place_orders_on():
+            return None
         return self._quote_cross(sym, direction)
 
 

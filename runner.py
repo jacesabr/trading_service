@@ -31,6 +31,7 @@ import pandas as pd
 import db
 import strategies as S
 import venues
+import alpaca_exec            # real Alpaca paper orders (filled demo trades), gated
 import paper_trader as pt   # klines(), find_market(), best_book(), taker_fill(), fee_fraction(), candle_outcome()
 from rlab import registry as _reg
 
@@ -180,6 +181,11 @@ def _record_binary(strat, symbol, dirn, rule, boundary, entry, detail=None):
     db.record_trade(sid, symbol, "long" if dirn > 0 else "short",
                     round(entry, 6), None, None, ts=boundary)
     _route_venues(sid, symbol, dirn, None, None, "binary", boundary)
+    # real filled demo trade on Alpaca (gated/allow-listed/long-crypto only)
+    try:
+        alpaca_exec.open_long(strat, sid, symbol, dirn)
+    except Exception as e:
+        print(f"  [alpaca_exec] open_long error {strat} {symbol}: {str(e)[:120]}")
     return sid
 
 
@@ -378,10 +384,20 @@ def resolve():
             print(f"  resolved TRADE {t['symbol']} {t['side']} -> {r[1]} {r[3]:+.0f}bps")
 
     for e in db.open_executions():                  # real venue paper fills
+        if (e.get("ref") or "").startswith("order:"):
+            continue                                # real Alpaca orders: closed by alpaca_exec
         r = _resolve_position(e, now_ms)
         if r:
             db.resolve_execution(e["id"], r[0], r[1], r[2], r[3], r[4])
             print(f"  resolved EXEC[{e['venue']}] {e['symbol']} {e['side']} -> {r[1]} {r[3]:+.0f}bps")
+
+    # flatten matured real Alpaca demo trades with a real sell (records real P&L)
+    try:
+        closed = alpaca_exec.close_due(now=now_ms / 1000)
+        if closed:
+            print(f"  alpaca_exec: closed {closed} real demo trade(s)")
+    except Exception as e:
+        print(f"  [alpaca_exec] close_due error: {str(e)[:120]}")
 
 
 if __name__ == "__main__":

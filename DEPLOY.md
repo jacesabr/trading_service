@@ -33,7 +33,7 @@ workspace: jae's (owner `tea-d8e1tae8bjmc73am2g10`); API auth via the
 
 ### Env vars per service (names only — set in the Render dashboard)
 - **dashboard**: `DATABASE_URL`, `ADMIN_USER`, `ADMIN_PASSWORD` (gates `/admin`; 503 if unset), `SIZE_USD`, `FEE_BPS`.
-- **worker**: `DATABASE_URL`, `NVIDIA_API_KEY`, `ALPACA_KEY`, `ALPACA_SECRET`, `PYTHONUNBUFFERED`. Optional: `ALPACA_PLACE_ORDERS=1` arms **real** Alpaca paper `/v2/orders` (long crypto) in `venues.AlpacaVenue` — **leave unset** (default = quote-cross, no order). `ALPACA_ORDER_NOTIONAL` (default 12, >$10 crypto floor). Do not arm until a closing-leg/round-trip exit exists, or entry-only orders accumulate.
+- **worker**: `DATABASE_URL`, `NVIDIA_API_KEY`, `ALPACA_KEY`, `ALPACA_SECRET`, `PYTHONUNBUFFERED`. **Real filled demo trades** (`alpaca_exec.py`): `ALPACA_PLACE_ORDERS=1` arms real Alpaca paper orders — long-crypto round-trips (buy on signal, sell to flatten next bar) recorded in `executions` with real fills + P&L. Allow-list `ALPACA_ORDER_STRATEGIES` (default `clv_fade`), `ALPACA_ORDER_NOTIONAL` (default 12, >$10 crypto floor), `ALPACA_MAX_HOLD_S` (default 1800 force-flatten). Self-closing + deduped, so safe to leave armed; unset → Phase-1 quote-cross sim. Money floor unaffected (paper account; real money still needs `LIVE_BUDGET_ARMED`).
 - **cron**: `DATABASE_URL`, `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY` (PEM contents), `KALSHI_API_BASE`, `ALPACA_KEY`, `ALPACA_SECRET`, `PYTHONUNBUFFERED`.
 
 ### Deploying a change
