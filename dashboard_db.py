@@ -261,6 +261,38 @@ def stats():
     return jsonify(full)
 
 
+@app.route("/api/ideas")
+def ideas_feed():
+    """PUBLIC — TradingView community ideas (scraped by ideas_mvp.py).
+
+    Returns the most-recent ideas with their extracted/chart-read trade params,
+    engagement, and resolution state. Tolerant of a missing `ideas` table
+    (returns empty) so the dashboard works before the first scrape."""
+    cols = ("id, ts, url, author, symbol, title, thesis, boosts, comments, "
+            "chart_image_url, direction, entry, stop, target, timeframe, basis, "
+            "confidence, outcome, ret_bps, status")
+    try:
+        rows = db._rows(f"SELECT {cols}, venue, exec_entry, exec_ts, bars_held "
+                        "FROM ideas ORDER BY ts DESC LIMIT 500")
+    except Exception:
+        # exec columns may not exist yet (before first ideas_exec run)
+        try:
+            rows = db._rows(f"SELECT {cols} FROM ideas ORDER BY ts DESC LIMIT 500")
+        except Exception:
+            rows = []
+    st = lambda s: sum(1 for r in rows if r.get("status") == s)
+    res = [r for r in rows if r.get("status") == "resolved"]
+    wins = sum(1 for r in res if (r.get("ret_bps") or 0) > 0)
+    pnl  = round(sum(float(r.get("ret_bps") or 0) for r in res), 1)
+    return jsonify({"last_update": int(time.time()), "ideas": rows,
+                    "n": len(rows),
+                    "extracted": st("extracted"), "needs_vision": st("needs_vision"),
+                    "open": st("open"), "resolved": len(res),
+                    "wins": wins, "pnl_bps": pnl,
+                    "dropped": st("dropped_tf") + st("invalidated") + st("no_venue"),
+                    "cap": 50})
+
+
 @app.route("/api/admin/stats")
 def admin_stats():
     """ADMIN — full cards + experiment ledger + version history + lessons."""
@@ -320,9 +352,44 @@ th:first-child,td:first-child{text-align:left}
 .panel.livecard{border-color:var(--up);box-shadow:0 0 0 1px rgba(63,182,139,.25)}
 .real{font:600 12px var(--mono);background:#0f2018;border-left:2px solid var(--up);padding:7px 10px;border-radius:0 6px 6px 0;margin:8px 0;color:var(--ink)}
 .real .lbl{color:var(--up);letter-spacing:.04em}
+/* ideas board */
+#ideas_wrap{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:6px 10px;overflow-x:auto;margin-bottom:8px}
+table.ideas{width:100%;border-collapse:collapse;font:11px var(--mono);min-width:980px}
+table.ideas th{position:sticky;top:0;background:var(--panel);text-align:right;padding:6px 8px;color:var(--dim);border-bottom:1px solid var(--line);font-weight:600;text-transform:uppercase;letter-spacing:.03em;font-size:10px}
+table.ideas td{text-align:right;padding:5px 8px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
+table.ideas th:nth-child(2),table.ideas td:nth-child(2),
+table.ideas th:last-child,table.ideas td:last-child,
+table.ideas th:nth-child(12),table.ideas td:nth-child(12){text-align:left}
+table.ideas tr:hover td{background:#0f1828}
+.idot{width:6px;height:6px;border-radius:50%;display:inline-block;margin-right:4px}
+.b-long{color:var(--up);font-weight:600}.b-short{color:var(--dn);font-weight:600}.b-none{color:var(--dim)}
+.st{font-size:9px;padding:1px 6px;border-radius:3px;font-weight:600;white-space:nowrap}
+.st-extracted{background:#1d3a2e;color:var(--up)}
+.st-needs_vision{background:#3a3320;color:var(--live)}
+.st-dropped_tf{background:#2a2f38;color:var(--dead)}
+.st-stored{background:#22304a;color:#9db4e0}
+.st-open{background:#13314d;color:#5fa8e0}
+.st-resolved{background:#1d3a2e;color:var(--up)}
+.st-invalidated{background:#2a2f38;color:var(--dead)}
+.st-no_venue{background:#2a2f38;color:var(--dead)}
+.thumb{width:42px;height:26px;object-fit:cover;border-radius:3px;border:1px solid var(--line);vertical-align:middle}
+.bas{font-size:9px;color:var(--dim)}.bas-chart{color:var(--up)}.bas-generated{color:var(--live)}
+a.idea-link{color:var(--live);text-decoration:none}a.idea-link:hover{text-decoration:underline}
 </style>
 <h1>STRATEGY TRACKER</h1>
 <div class=sub id=sub>loading…</div>
+
+<h2 class=sec id=sec_ideas style="color:var(--live)">💡 TRADINGVIEW IDEAS
+  <small>· community ideas scraped &amp; chart-read → demo-executed · <span id=ideas_stat></span></small></h2>
+<div id=ideas_wrap>
+  <table id=ideas_tbl class=ideas><thead><tr>
+    <th>chart</th><th>symbol</th><th>dir</th><th>entry</th><th>target</th><th>stop</th>
+    <th>TF</th><th>basis</th><th>conf</th><th>status</th><th>outcome</th>
+    <th>author</th><th>boosts</th><th>idea</th>
+  </tr></thead><tbody id=ideas_body></tbody></table>
+  <div class=empty id=ideas_empty style="display:none">No ideas scraped yet — run <code>python ideas_mvp.py</code>.</div>
+</div>
+
 <h2 class=sec id=sec_live><span class="livedot"></span>LIVE — real broker orders <small>· actual filled demo trades (Alpaca paper), most → least profitable</small></h2>
 <div class=grid id=grid_live></div>
 <h2 class=sec id=sec_paper>PAPER — simulation <small>· resolved from real bars, no orders placed · most → least profitable</small></h2>
@@ -436,7 +503,47 @@ async function tick(){
  document.getElementById('sec_live').style.display=nlive?'':'none';
  document.getElementById('grid_live').style.display=nlive?'':'none';
 }
+function ideaDir(d){return d===1?'<span class=b-long>LONG</span>':d===-1?'<span class=b-short>SHORT</span>':'<span class=b-none>—</span>';}
+function px(v){return (v==null||v===0)?'—':Number(v).toLocaleString(undefined,{maximumFractionDigits:2});}
+async function tickIdeas(){
+ let s; try{ s=await(await fetch('/api/ideas')).json(); }catch(e){ return; }
+ const body=document.getElementById('ideas_body');
+ const empty=document.getElementById('ideas_empty');
+ const stat=document.getElementById('ideas_stat');
+ const pnlTxt = s.resolved ? ` · ${s.wins}/${s.resolved} win, ${s.pnl_bps>=0?'+':''}${s.pnl_bps} bps` : '';
+ stat.innerHTML = `${s.n} ideas · ${s.extracted} ready · ${s.needs_vision} need chart-read · `
+   + `<b style="color:#5fa8e0">${s.open} open</b> · ${s.resolved} resolved${pnlTxt} · ${s.dropped} dropped · ${s.open}/${s.cap} cap`;
+ if(!s.ideas||!s.ideas.length){ empty.style.display=''; document.getElementById('ideas_tbl').style.display='none'; return; }
+ empty.style.display='none'; document.getElementById('ideas_tbl').style.display='';
+ body.innerHTML = s.ideas.map(r=>{
+  const thumb = r.chart_image_url
+    ? `<a href="${r.url}" target=_blank rel=noopener><img class=thumb src="${r.chart_image_url}" loading=lazy onerror="this.style.display='none'"></a>` : '—';
+  let oc;
+  if(r.outcome){ oc = r.ret_bps>=0
+        ? `<span class=pos>${r.outcome} +${r.ret_bps} bps</span>`
+        : `<span class=neg>${r.outcome} ${r.ret_bps} bps</span>`; }
+  else if(r.status==='open'){ oc = `<span style="color:#5fa8e0">live @ ${px(r.exec_entry)}</span>`; }
+  else { oc = '<span style="color:var(--dim)">—</span>'; }
+  return `<tr>
+    <td>${thumb}</td>
+    <td><b style="color:var(--ink)">${r.symbol||'?'}</b></td>
+    <td>${ideaDir(r.direction)}</td>
+    <td>${px(r.entry)}</td>
+    <td>${px(r.target)}</td>
+    <td>${px(r.stop)}</td>
+    <td>${r.timeframe||'—'}</td>
+    <td class="bas bas-${r.basis||''}">${r.basis||'—'}</td>
+    <td>${r.confidence!=null?(r.confidence*100).toFixed(0)+'%':'—'}</td>
+    <td><span class="st st-${r.status||'stored'}">${(r.status||'stored').replace('_',' ')}</span></td>
+    <td>${oc}</td>
+    <td style="color:var(--dim)">${r.author||'—'}</td>
+    <td>${r.boosts||0}</td>
+    <td><a class=idea-link href="${r.url}" target=_blank rel=noopener>open ↗</a></td>
+  </tr>`;
+ }).join('');
+}
 tick();setInterval(tick,30000);
+tickIdeas();setInterval(tickIdeas,30000);
 </script>"""
 
 

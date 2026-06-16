@@ -51,8 +51,20 @@ def main():
     except Exception as e:
         out["equity_orders"] = {"error": str(e)[:200]}
 
+    # --- TradingView Ideas: resolve open demo brackets (real klines, no LLM) ---
+    # Resolution is pure price data, so it runs unattended here every cycle; the
+    # scrape + chart-read (which need Claude Code) stay in the manual runbook.
+    try:
+        import ideas_exec
+        ideas_exec._ensure_cols()
+        ires = ideas_exec.resolve_open()
+        out["ideas"] = {"resolved": ires}
+    except Exception as ex:
+        out["ideas"] = {"error": str(ex)[:200]}
+
     # --- summary line ---
     k = out.get("kalshi", {}); e = out.get("equity", {}); o = out.get("equity_orders", {})
+    iv = out.get("ideas", {})
     print(f"[daily {started}] kalshi: resolved={k.get('resolved','?')} "
           f"recorded={k.get('recorded','?')}"
           + (f" ERR={k['error']}" if "error" in k else "")
@@ -61,7 +73,9 @@ def main():
           + (f" ERR={e['error']}" if "error" in e else "")
           + f" | eq_orders: resolved={o.get('resolved','?')} "
           f"placed={o.get('placed','?')}"
-          + (f" ERR={o['error']}" if "error" in o else ""))
+          + (f" ERR={o['error']}" if "error" in o else "")
+          + f" | ideas: resolved={iv.get('resolved','?')}"
+          + (f" ERR={iv['error']}" if "error" in iv else ""))
     return out
 
 

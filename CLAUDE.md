@@ -52,7 +52,16 @@ how good the in-sample number looks.
 - runner.py — crypto 5m live loop. daily.py — every-2h Kalshi+equity collect/resolve.
 - kalshi_paper.py + adapters/ (kalshi_client, data/kalshi, data/alpaca) — real-API
   paper engines. equity_paper.py — strategy battery on Alpaca equities × timeframes.
-- dashboard_db.py — public results (sorted by P&L) + `/admin` (auth) + `/docs`.
+- dashboard_db.py — public results (sorted by P&L) + `/admin` (auth) + `/docs`
+  + `/api/ideas` and the TradingView Ideas board at the top of the page.
+- ideas_mvp.py — TradingView Ideas P1–P2 (one file: scrape via Tavily + store in
+  the `ideas` table + extract levels). Vision is **manual** for now — Claude Code
+  reads the chart images and writes levels back (`--set-levels`); the VLM path is
+  wired for later. Run it 1–2×/day per **tradingview_automation_run.md**.
+- ideas_exec.py — TradingView Ideas P3 demo execution: routes symbol→Binance pair,
+  market-enters at the live price, resolves the chart-read bracket on real 1m
+  klines (no-lookahead, long+short). Venue `binance_sim` (real prices, honest sim,
+  not a broker fill). Lifecycle in `ideas.status`: extracted→open→resolved.
 - executor.py / forex_oanda.py / kalshi_paper.place_live — live order layers,
   all gated (LIVE_BUDGET_ARMED). Don't loosen rails.
 - LEGACY one-off backtests (superseded by lab.py/harness, kept for reference):

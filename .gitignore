@@ -11,3 +11,5 @@ secrets/
 *.pem
 *.key
 reports/
+_charts/
+.firecrawl/
