@@ -409,6 +409,12 @@ if __name__ == "__main__":
     target = "Postgres/Neon" if db.IS_PG else db.DB_PATH
     print(f"runner live | {len(S.STRATEGIES)} strategies x {len(SYMBOLS)} symbols "
           f"(5m) -> {target}")
+    try:                                            # one-shot: confirm Binance
+        import adapters.binance_testnet as _bt      # signed auth works from this
+        if _bt.available():                         # region (Frankfurt worker)
+            print(f"[binance_testnet] auth probe: {_bt.probe()}")
+    except Exception as _e:
+        print(f"[binance_testnet] probe error: {_e}")
     while True:
         now = time.time()
         nxt = (int(now) // WIN + 1) * WIN
