@@ -141,12 +141,13 @@ a monitor fires the moment an idea is published, so we trade it on the demo acco
 <p class=k>Coverage is honest up front: a large share of TradingView ideas (esp. NSE on the .in site) have no demo venue — those are tracked as sim, not real fills, and clearly labelled. The real-fill subset is what carries credibility.</p>
 </div>
 
-<h2>6 · Safety floors (unchanged)</h2>
+<h2>6 · Safety floors &amp; bounds</h2>
 <ul>
 <li><b>Demo / paper only.</b> Real money still requires <code>LIVE_BUDGET_ARMED=1</code> — left off.</li>
-<li><b>Bounded:</b> top 500 most-recent idea-trades; small fixed qty; one order per idea (deduped); broker-managed OCO exits so nothing accumulates.</li>
+<li><b>≤ 50 concurrent open trades — global hard cap.</b> Doubles as the compute governor: check the open count <i>first</i>; if it's at 50, <b>skip the expensive scrape + vision entirely</b> (no point extracting an idea we can't place). Broker OCO frees slots as trades resolve. No babysitting of running trades — the venue holds the exit.</li>
+<li><b>≤ 4H timeframe only.</b> The vision read includes the chart's TF; ideas above 4H (1D / 1W swing) are dropped — we want intraday/short-swing, not multi-week positions that tie up slots.</li>
+<li><b>Per-source/symbol caps:</b> running set of ~10 per source, ≤2 open per symbol; small fixed qty; one independent order per idea (deduped); broker-managed OCO exits so nothing accumulates.</li>
 <li><b>AI-generated levels are flagged</b> — never presented as the author's call.</li>
-<li><b>Per-run cap</b> on new executions so a busy feed can't fan out unbounded.</li>
 </ul>
 
 <h2>7 · Phased build</h2>
@@ -170,7 +171,8 @@ a monitor fires the moment an idea is published, so we trade it on the demo acco
 <h2>9 · Open decisions (your call)</h2>
 <ul>
 <li><b>One trade per idea — NO consensus.</b> Ideas are on different timeframes/setups, so there is nothing comparable to "vote" on. Each idea is an <b>independent</b> trade: its own direction, entry, target, stop, and timeframe → its own hold. We execute and score each on its own; the broker OCO closes it whenever its TP/SL hits, be that hours or days. A per-symbol cap (e.g. ≤2 open at once) is only a volume guard, not a vote.</li>
-<li><b>Timeframe → max-hold:</b> the idea's chart TF sets a max-hold cap (intraday closes same session, swing runs days) after which we flatten if neither TP nor SL hit. The OCO does the rest.</li>
+<li><b>Timeframe → max-hold:</b> only ≤4H ideas are taken; the chart TF sets a max-hold cap (a 4H idea holds a bounded number of bars) after which we flatten if neither TP nor SL hit. The OCO does the rest.</li>
+<li><b>Global cap = 50</b> concurrent open trades, checked before any expensive work (compute governor). At cap → skip; slots free as OCO exits resolve.</li>
 <li><b>Non-US coverage:</b> record-only sim for unsupported markets, or skip entirely? (recommend record-only — it still answers "is the author good?").</li>
 <li><b>Generated-level aggression:</b> how wide a stop/target the LLM may set (ATR multiples) — a guardrail so it can't invent absurd brackets.</li>
 <li><b>Vision model:</b> NIM VLM vs Claude vs another — pick on a head-to-head accuracy test reading real annotated charts (this gates the whole project).</li>
