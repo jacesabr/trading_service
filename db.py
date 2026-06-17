@@ -233,6 +233,18 @@ def resolve_execution(exec_id, exit_price, outcome, won, ret_bps, bars_held):
     c.commit(); cur.close(); c.close()
 
 
+def update_execution_ref(exec_id, ref, entry=None):
+    """Update an open execution's ref (used to carry lifecycle state, e.g. a
+    futures bracket transitioning entry → exits) and optionally the real fill."""
+    c = conn(); cur = c.cursor()
+    if entry is None:
+        cur.execute(f"UPDATE executions SET ref={PH} WHERE id={PH}", (ref, exec_id))
+    else:
+        cur.execute(f"UPDATE executions SET ref={PH},entry={PH} WHERE id={PH}",
+                    (ref, entry, exec_id))
+    c.commit(); cur.close(); c.close()
+
+
 def open_executions():
     return _rows("SELECT * FROM executions WHERE outcome=''")
 

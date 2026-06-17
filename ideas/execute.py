@@ -47,9 +47,11 @@ import urllib.request
 
 import db
 import equity_orders                       # reuse the Alpaca paper order HTTP layer
+import bybit_orders                         # REAL Bybit demo crypto orders (server-side)
 
 BINANCE = os.environ.get("BINANCE_REST", "https://api.binance.com")
 ALPACA_VENUE = "alpaca"                     # REAL Alpaca paper bracket (broker OCO)
+BYBIT_VENUE  = "bybit_demo"                 # REAL Bybit demo perp (broker-held TP/SL)
 VENUE   = "binance_sim"
 
 # TF → minutes; sets the max-hold (after which an un-hit bracket is flattened) so
@@ -228,6 +230,90 @@ def _resolve_equity(r):
     return None                                       # entry limit still resting
 
 
+# ─── Bybit demo crypto venue (REAL server-side perp, broker-held TP/SL) ───────
+# Crypto ideas → a REAL Bybit demo LIMIT entry with the take-profit/stop-loss
+# attached to the order (the broker holds both exits). Long AND short. Bybit demo
+# is one-way netting, so only ONE open Bybit order per symbol at a time — a second
+# idea on the same symbol falls back to binance_sim so brackets never interfere.
+def _bybit_busy(bsym):
+    """One-open-per-symbol guard via the live Bybit account (no schema change):
+    busy if there's an open position OR a resting order on the symbol."""
+    if bybit_orders._position_size(bsym):
+        return True
+    r = bybit_orders._req("GET", "/v5/order/realtime",
+                          {"category": bybit_orders.CAT, "symbol": bsym})
+    return bool((r.get("result") or {}).get("list"))
+
+
+def _place_crypto_bybit(r, bsym, probe=False):
+    """REAL Bybit demo limit-entry with attached TP/SL. Returns orderId / 'probe'
+    / None (None → caller falls back to binance_sim)."""
+    if not bybit_orders.armed():
+        return None
+    it = bybit_orders._instr(bsym)
+    if not it:
+        return None                                   # not listed on Bybit (e.g. PAXG)
+    if _bybit_busy(bsym):
+        return None                                   # symbol already has a live trade
+    d = r["direction"]; entry = float(r["entry"]); tp = float(r["target"]); sl = float(r["stop"])
+    qty = bybit_orders._floor_step(bybit_orders.NOTIONAL_USDT / entry, it["qty_step"])
+    if qty < it["min_qty"] or qty * entry < it["min_notional"]:
+        return None
+    fmt = bybit_orders._fmt
+    if probe:
+        print(f"  idea {r['id']} {bsym}: WOULD place Bybit {'Buy' if d>0 else 'Sell'} "
+              f"limit entry={entry} tp={tp} sl={sl}")
+        return "probe"
+    body = {"category": bybit_orders.CAT, "symbol": bsym,
+            "side": "Buy" if d > 0 else "Sell", "orderType": "Limit",
+            "qty": fmt(qty, it["qty_step"]), "price": fmt(entry, it["tick"]),
+            "timeInForce": "GTC", "tpslMode": "Full",
+            "takeProfit": fmt(tp, it["tick"]), "stopLoss": fmt(sl, it["tick"]),
+            "tpTriggerBy": "LastPrice", "slTriggerBy": "LastPrice"}
+    resp = bybit_orders._req("POST", "/v5/order/create", body)
+    oid = (resp.get("result") or {}).get("orderId")
+    if resp.get("retCode") != 0 or not oid:
+        print(f"  idea {r['id']} {bsym}: Bybit reject {resp.get('retMsg')}")
+        return None
+    return oid
+
+
+def _resolve_bybit(r):
+    """Poll the Bybit demo order/position → fill (pending→open) / TP-SL close
+    (→resolved) / dead order (→invalidated). Returns idea column updates or None."""
+    oid = (r.get("ref") or "")[len("byb:"):]
+    bsym = route(r["symbol"])
+    if not oid or not bsym:
+        return None
+    o = bybit_orders._order(bsym, oid)
+    status = o.get("orderStatus") if o else None
+    if status in ("New", "PartiallyFilled", "Untriggered"):
+        return None                                   # entry still resting
+    if status in ("Cancelled", "Rejected", "Deactivated"):
+        return dict(status="invalidated")
+    size = bybit_orders._position_size(bsym)
+    if size is None:
+        return None
+    if size > 0:                                      # filled, TP/SL riding
+        if r["status"] != "open":
+            ap = float((o or {}).get("avgPrice") or r["entry"])
+            return dict(status="open", exec_entry=round(ap, 6),
+                        exec_ts=int(time.time()))
+        return None
+    cp = bybit_orders._last_closed(bsym)              # position closed → realized
+    if not cp:
+        return None
+    d = 1 if r["direction"] > 0 else -1
+    entry = float(cp.get("avgEntryPrice") or r["entry"])
+    exitp = float(cp.get("avgExitPrice") or entry)
+    pnl = float(cp.get("closedPnl") or 0)
+    ret = d * (exitp - entry) / entry * 1e4 if entry else 0.0
+    outcome = ("target" if abs(exitp - float(r["target"])) <= abs(exitp - float(r["stop"]))
+               else "stop")
+    return dict(status="resolved", outcome=outcome, ret_bps=round(ret, 1),
+                exec_entry=round(entry, 6), bars_held=0)
+
+
 # ─── DB helpers (idea exec columns) ───────────────────────────────────────────
 def _ensure_cols():
     """Add the execution columns to `ideas` if missing (idempotent)."""
@@ -289,9 +375,18 @@ def work_orders(probe=False):
             continue
 
         side = "LONG" if d == 1 else "SHORT"
-        bsym = route(r["symbol"])                      # 1) crypto -> binance_sim
+        bsym = route(r["symbol"])                      # 1) crypto
         if bsym:
-            print(f"  idea {r['id']} {bsym}: ORDER {side} entry={r['entry']} "
+            oid = _place_crypto_bybit(r, bsym, probe=probe)   # 1a) REAL Bybit demo
+            if oid:
+                print(f"  idea {r['id']} {bsym}: BYBIT {side} limit entry={r['entry']} "
+                      f"tp={r['target']} sl={r['stop']} tf={r['timeframe']} -> pending")
+                if not probe:
+                    _update(r["id"], status="pending", venue=BYBIT_VENUE,
+                            ref=f"byb:{oid}")
+                n_work += 1
+                continue
+            print(f"  idea {r['id']} {bsym}: ORDER {side} entry={r['entry']} "    # 1b) sim
                   f"tp={r['target']} sl={r['stop']} tf={r['timeframe']} -> pending (sim)")
             if not probe:
                 _update(r["id"], status="pending", venue=VENUE)
@@ -398,8 +493,10 @@ def resolve_open(probe=False):
     now_ms = int(time.time() * 1000)
     n_filled = n_resolved = n_expired = 0
     for r in rows:
-        if r.get("venue") == ALPACA_VENUE:            # real broker order
+        if r.get("venue") == ALPACA_VENUE:            # real Alpaca broker order
             res = _resolve_equity(r)
+        elif r.get("venue") == BYBIT_VENUE:           # real Bybit demo order
+            res = _resolve_bybit(r)
         else:                                         # binance_sim (kline walk)
             res = _evaluate(r, now_ms)
         if not res:

@@ -206,6 +206,11 @@ def _build_cards():
                     rwm = float(np.mean(rw))
                     card.update(rw_base=round(rwm, 3),
                                 edge_pp=round((win_br - rwm) * 100, 1))
+                rr_list = [abs(t["target"] - t["entry"]) / abs(t["entry"] - t["stop"])
+                           for t in br if abs(t["entry"] - t["stop"]) > 0]
+                if rr_list:
+                    card["avg_rr"] = round(float(np.mean(rr_list)), 2)
+                card["since_ts"] = res_sorted[0]["ts"]
                 net_cum = float(ret.sum()) - len(res) * cost
                 card["pnl_total"] = round(net_cum, 1)            # cumulative net bps
                 card["rank_score"] = round(gross - cost, 2)      # net bps / trade
