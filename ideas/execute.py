@@ -75,13 +75,8 @@ MIN_STOP_FRAC = {"1m": 0.002, "3m": 0.003, "5m": 0.003, "15m": 0.005,
 
 # Drift tolerance, in units of planned risk R (R = |entry − stop|). When a fill
 # lands far from the author's entry the published setup is stale — it's no longer
-# the trade. The cap is RR-graded because a high-RR setup has a tight stop, so a
-# given price drift is a larger fraction of R and degrades the trade faster:
-#   planned RR > 2  → reject if drift > 0.5 R   (a 1R loss on a >2RR setup is bad)
-#   planned RR ≤ 2  → reject if drift > 1.0 R   (more than one risk-unit off-level)
-MAX_DRIFT_R       = 1.0      # general cap
-MAX_DRIFT_R_HI_RR = 0.5      # cap when planned RR > 2
-HI_RR             = 2.0
+# the trade. Cutoff: losing 1 R to drift. More than 1 R off the entry → skip.
+MAX_DRIFT_R = 1.0
 
 
 def _entry_validity(d, entry, target, stop, px, tf, absolute_stop):
@@ -106,16 +101,14 @@ def _entry_validity(d, entry, target, stop, px, tf, absolute_stop):
         return False, f"target {target} already reached at live {px} — setup played out"
     if (px - stop) * d <= 0:
         return False, f"live {px} already at/through stop {stop} — setup invalidated"
-    # Drift cap: our fill (~px) is this many risk-units off the author's entry. Too
-    # far = a stale level we shouldn't chase, tighter for high-RR setups.
+    # Drift cap: our fill (~px) is this many risk-units off the author's entry. More
+    # than 1 R off = a stale level we shouldn't chase (cutoff: 1 R lost to drift).
     risk = abs(entry - stop)
     if risk > 0:
         drift_r = abs(px - entry) / risk
-        rr = abs(target - entry) / risk
-        cap = MAX_DRIFT_R_HI_RR if rr > HI_RR else MAX_DRIFT_R
-        if drift_r > cap:
+        if drift_r > MAX_DRIFT_R:
             return False, (f"fill ~{px} is {drift_r:.2f}R off the {entry} entry "
-                           f"(> {cap:.1f}R cap for a {rr:.1f}RR setup) — stale level, skip")
+                           f"(> {MAX_DRIFT_R:.1f}R cutoff) — stale level, skip")
     if absolute_stop:
         room = abs(px - stop) / px
         floor = MIN_STOP_FRAC.get(tf, 0.010)
