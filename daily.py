@@ -12,9 +12,15 @@ the agent does nothing.
 
 Run: python daily.py   (uses DATABASE_URL if set, else local tracker.db)
 """
+import os
 import time
 
 import db
+
+# Local SIMULATION collection (Kalshi paper bets + equity-bar paper trades) is OFF
+# by default — we track REAL broker fills only (Alpaca/Bybit). Set LAB_SIM=1 to
+# re-enable the self-resolved sim data collection.
+SIM = os.environ.get("LAB_SIM") == "1"
 
 
 def main():
@@ -22,29 +28,27 @@ def main():
     started = time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime())
     out = {"started": started}
 
-    # --- Kalshi crypto model (real API, paper) ---
-    try:
-        import kalshi_paper as kp
-        resolved = kp.resolve_open()
-        recorded = kp.collect()
-        out["kalshi"] = {"resolved": resolved, "recorded": recorded}
-    except Exception as e:
-        out["kalshi"] = {"error": str(e)[:200]}
+    if SIM:
+        # --- Kalshi crypto model (real API, paper SIM) ---
+        try:
+            import kalshi_paper as kp
+            out["kalshi"] = {"resolved": kp.resolve_open(), "recorded": kp.collect()}
+        except Exception as e:
+            out["kalshi"] = {"error": str(e)[:200]}
 
-    # --- Equities on Alpaca (real bars, paper) ---
-    try:
-        import equity_paper as eq
-        eq.ensure_manifests()
-        eres = eq.resolve_open()
-        erec = eq.collect()
-        out["equity"] = {"resolved": eres, "recorded": erec}
-    except Exception as e:
-        out["equity"] = {"error": str(e)[:200]}
+        # --- Equities on Alpaca (real bars, paper SIM) ---
+        try:
+            import equity_paper as eq
+            eq.ensure_manifests()
+            out["equity"] = {"resolved": eq.resolve_open(), "recorded": eq.collect()}
+        except Exception as e:
+            out["equity"] = {"error": str(e)[:200]}
 
-    # --- REAL Alpaca equity bracket orders (broker-managed OCO, gated) ---
+    # --- REAL Alpaca equity bracket orders (broker-managed OCO) — always on ---
     try:
         import equity_orders
         import equity_paper as eq
+        eq.ensure_manifests()
         ores = equity_orders.resolve_open()
         oplaced = eq.place_live_orders()
         out["equity_orders"] = {"resolved": ores, "placed": oplaced}
