@@ -100,6 +100,11 @@ live price (Alpaca data API for equities, Binance book ticker for crypto):
    - **equities only:** stop room from the live price < the timeframe's floor
      (`MIN_STOP_FRAC`, e.g. 6% on 1w, 1% on 1h) → **invalidated** (would be
      noise-stopped — the NOW case). Bybit is exempt because it re-anchors.
+   - **drift cap (both venues):** the fill (~live px) is more than **1.0 R** off the
+     author's entry — or more than **0.5 R** off for a planned **RR > 2** setup
+     (R = |entry − stop|) → **invalidated**. The level is stale; we don't chase it.
+     High-RR setups are held tighter because their small R turns a given price drift
+     into a larger risk-unit loss, so giving up ~1 R to drift there is unacceptable.
    - otherwise the marketable fill is favorable (a better price, valid stop) → place.
 
 Plus: **outcome is now labelled by P&L sign**, not by which OCO leg filled, so a

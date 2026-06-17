@@ -149,6 +149,14 @@ structural support. Follow these rules; they are hard rules, not suggestions.
   that this drift alone stops you. Bybit re-anchors TP/SL to the real fill
   (RR preserved); Alpaca uses the **absolute** stop you set, so on equities the stop
   must already be far enough from the *current* price, not just from the entry.
+- **Drift tolerance, in units of risk R** (R = entry→stop distance). Trivial drift is
+  fine, but if the fill lands too far from the author's entry the published setup is
+  stale — it's no longer the trade. The gate auto-**invalidates** when the fill is
+  more than **1.0 R** off the entry, and more than **0.5 R** off for setups with
+  planned **RR > 2** (their tight stops make a given price drift a bigger fraction of
+  R, so losing ~1 R to drift on a >2RR idea is unacceptable). If the live price is
+  already > 1 R away from the entry when you go to `set`, don't bother — the level
+  has moved on.
 
 **Write a justification box with every `set`** so the trade is auditable. Put it in
 the commit message / run notes for that idea, in this format:
