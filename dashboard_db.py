@@ -118,9 +118,7 @@ def _build_cards():
     HOW (method/risk/signal/gate/provenance). Public route redacts via _public."""
     db.init()
     now = int(time.time())
-    bets = db.recent_bets(800)
-    trades = db.recent_trades_capped(2000)        # per-strategy: no 0-trade crowd-out
-    execs = db.recent_executions(2000)
+    execs = db.recent_executions(2000)            # REAL broker fills only (sim purged)
     act = db.activity()
 
     out = {"last_update": now, "strategies": {}}
@@ -140,80 +138,6 @@ def _build_cards():
                     pending=a.get("pending", 0),
                     last_age_min=_age_min(a.get("last_ts"), now),
                     n=0, recent=[], pnl_total=0, rank_score=-1e12)
-
-        if meta["venue"] == "polymarket":           # meanrev -> bets
-            rows = [b for b in bets if b["strategy"] == name]
-            res = [b for b in rows if b["outcome"]]
-            if res:
-                res_sorted = sorted(res, key=lambda b: b["ts"])
-                won = np.array([b["won"] for b in res], float)
-                ent = np.array([b["entry_price"] for b in res], float)
-                pnl = np.array([b["pnl"] for b in res_sorted], float)
-                cal = {}
-                for b in res:
-                    k = round(b["entry_price"] * 20) / 20
-                    cal.setdefault(k, []).append(b["won"])
-                card.update(
-                    n=len(res), hit=round(float(won.mean()), 4),
-                    avg_entry=round(float(ent.mean()), 3),
-                    ev=round(float(pnl.mean()) / SIZE_USD, 4),
-                    equity=np.round(np.cumsum(pnl), 2).tolist(), unit="$",
-                    cal=[{"p": round(float(k), 2),
-                          "win": round(float(np.mean(v)), 3), "n": len(v)}
-                         for k, v in sorted(cal.items()) if len(v) >= 5],
-                    recent=[dict(t=b["ts"], symbol=b["symbol"], side=b["side"],
-                                 entry=round(b["entry_price"], 3),
-                                 outcome=b["outcome"], pnl=b["pnl"])
-                            for b in sorted(res, key=lambda b: b["ts"],
-                                            reverse=True)[:25]])
-                card["pnl_total"] = round(float(pnl.sum()), 2)   # total $ P&L
-                card["rank_score"] = round(float(pnl.mean()) / SIZE_USD * 1e4, 1)
-        else:                                        # everything else -> trades
-            rows = [t for t in trades if t["strategy"] == name]
-            res = [t for t in rows if t["outcome"]]
-            if res:
-                res_sorted = sorted(res, key=lambda t: t["ts"])
-                won = np.array([t["won"] for t in res], float)
-                ret = np.array([t["ret_bps"] for t in res_sorted], float)
-                gross = float(ret.mean())
-                spreads = [s for s in (_spread_of(t) for t in res) if s is not None]
-                avg_spread = round(float(np.mean(spreads)), 2) if spreads else None
-                cost = (avg_spread or 0.0) + FEE_BPS
-                card.update(
-                    n=len(res), hit=round(float(won.mean()), 4),
-                    exp_bps=round(gross, 1),
-                    net_bps=round(gross - cost, 1),
-                    spread_bps=avg_spread, fee_bps=FEE_BPS,
-                    spread_n=len(spreads),
-                    equity=np.round(np.cumsum(ret), 1).tolist(), unit="bps",
-                    recent=[dict(t=t["ts"], symbol=t["symbol"], side=t["side"],
-                                 entry=t["entry"], exit=t["exit"],
-                                 outcome=t["outcome"], ret_bps=t["ret_bps"])
-                            for t in sorted(res, key=lambda t: t["ts"],
-                                            reverse=True)[:25]])
-                # bracket only: edge vs random-walk first-passage baseline.
-                # rw_base = P(touch target before stop) under a driftless walk =
-                # stop_dist / (stop_dist + target_dist). win >> rw_base here is
-                # mostly the intrabar-touch-vs-close asymmetry, not real edge.
-                br = [t for t in res if t["target"] is not None
-                      and t["stop"] is not None and t["entry"]]
-                rw = [abs(t["entry"] - t["stop"]) /
-                      (abs(t["entry"] - t["stop"]) + abs(t["target"] - t["entry"]))
-                      for t in br
-                      if abs(t["entry"] - t["stop"]) + abs(t["target"] - t["entry"]) > 0]
-                if rw:
-                    win_br = float(np.mean([t["won"] for t in br]))
-                    rwm = float(np.mean(rw))
-                    card.update(rw_base=round(rwm, 3),
-                                edge_pp=round((win_br - rwm) * 100, 1))
-                rr_list = [abs(t["target"] - t["entry"]) / abs(t["entry"] - t["stop"])
-                           for t in br if abs(t["entry"] - t["stop"]) > 0]
-                if rr_list:
-                    card["avg_rr"] = round(float(np.mean(rr_list)), 2)
-                card["since_ts"] = res_sorted[0]["ts"]
-                net_cum = float(ret.sum()) - len(res) * cost
-                card["pnl_total"] = round(net_cum, 1)            # cumulative net bps
-                card["rank_score"] = round(gross - cost, 2)      # net bps / trade
 
         # REAL broker fills only — the lab is real-execution now (sim deleted).
         # order:=Alpaca crypto round-trip · bracket:=Alpaca equity OCO · byb*=Bybit
@@ -251,13 +175,21 @@ def _build_cards():
                                   f"(entry, exit & P&L from the venue), not local sim. "
                                   f"n={len(res)}" + (f", {len(real)-len(res)} open."
                                   if len(real) > len(res) else "."))
-            out["strategies"][name] = card
-        # strategies with NO real broker fills are omitted — real-only view.
-    # most -> least profitable
+        else:
+            # no real broker fills yet — show the strategy (collapsed) as awaiting
+            # live execution. Sim is deleted, so it has no results to display.
+            card.update(n=0, n_open=0, unit="bps", mode="demo",
+                        broker="—", since_ts=None, rank_score=-1e12)
+            card["group"] = "idle"
+            card["confidence"] = ("No broker fills yet — this strategy isn't placing "
+                                  "real demo orders, so there's nothing to show "
+                                  "(local sim was removed).")
+        out["strategies"][name] = card           # show ALL strategies
+    # real-fill strategies first (most → least profitable), then idle ones
     items = sorted(out["strategies"].items(),
                    key=lambda kv: kv[1].get("rank_score", -1e12), reverse=True)
     out["strategies"] = dict(items)
-    out["live_count"] = len(items)
+    out["live_count"] = sum(1 for _, c in items if c.get("group") == "live")
     return out
 
 
@@ -500,7 +432,7 @@ details.scard .ph h2{font:600 14px var(--mono);color:var(--ink)}
 <h2 class=sec id=sec_ideas style="color:var(--live)">💡 TRADINGVIEW IDEAS
   <small>· community ideas chart-read &amp; demo-executed onto brokers · <span id=ideas_sub></span></small></h2>
 <div id=ideas_stats class=statgrid></div>
-<details id=det_ongoing open><summary>Ongoing trades <span id=cnt_ongoing class=cnt></span></summary>
+<details id=det_ongoing><summary>Ongoing trades <span id=cnt_ongoing class=cnt></span></summary>
   <div class=tw><table class=ideas id=tbl_ongoing><thead><tr>
     <th>chart</th><th>symbol</th><th>dir</th><th>entry</th><th>target</th><th>stop</th>
     <th>RR</th><th>TF</th><th>broker</th><th>executed</th><th>status</th><th>conf</th><th>idea</th>
@@ -515,7 +447,7 @@ details.scard .ph h2{font:600 14px var(--mono);color:var(--ink)}
   <div class=empty id=empty_prev style="display:none">No closed trades yet.</div>
 </details>
 
-<h2 class=sec id=sec_live><span class="livedot"></span>STRATEGIES — real broker results <small>· click a card to expand · broker-executed demo fills only, most → least profitable</small></h2>
+<h2 class=sec id=sec_live><span class="livedot"></span>STRATEGIES — real broker results <small>· click a card to expand · live (real fills) first, then strategies awaiting execution</small></h2>
 <div class=grid id=grid_live></div>
 <div class=empty id=no_strats style="display:none">No strategy has real broker fills yet — results appear once a live demo order resolves.</div>
 <script>
@@ -608,18 +540,19 @@ async function tick(){
  for(const [name,c] of Object.entries(s.strategies)){
   let p=document.getElementById('p_'+name);
   if(!p){p=document.createElement('div');p.id='p_'+name;gl.appendChild(p);}  // preserve order
+  const has=(c.n||0)+(c.n_open||0)>0;
   const winc=c.hit==null?'':(c.hit>=0.5?'pos':'neg'), pc=(c.pnl_total||0)>=0?'pos':'neg';
-  const tradesTxt=(c.n||0)+(c.n_open?` <span style="color:var(--dim)">(+${c.n_open})</span>`:'');
+  const tradesTxt=has?((c.n||0)+(c.n_open?` <span style="color:var(--dim)">(+${c.n_open})</span>`:'')):'0';
   p.innerHTML=`
    <details class=scard>
      <summary>
        <div class=ph><h2>${c.label}</h2><span class="tag ${tcls(c.status)}">${c.status}</span></div>
        <div class=cardsum>
-         ${si('P&amp;L', pnlStr(c), pc)}
+         ${si('P&amp;L', has?pnlStr(c):'—', has?pc:'')}
          ${si('Win / Loss', c.hit==null?'—':pct(c.hit), winc)}
          ${si('Trades', tradesTxt)}
          ${si('Avg R:R', c.avg_rr==null?'—':c.avg_rr)}
-         ${si('Broker', c.broker||c.venue||'—')}
+         ${si('Broker', c.broker||'—')}
          ${si('Running', runtimeStr(c.since_ts))}
        </div>
      </summary>
