@@ -248,8 +248,8 @@ def _place_crypto_bybit(r, bsym, probe=False):
     if not it:
         return None                                   # not listed on Bybit
     d = r["direction"]; entry = float(r["entry"])
-    qty = bybit_orders._floor_step(bybit_orders.NOTIONAL_USDT / entry, it["qty_step"])
-    if qty < it["min_qty"] or qty * entry < it["min_notional"]:
+    qty, _risk = bybit_orders.qty_for_risk(entry, float(r["stop"]), it)  # ~$1 CAD risk
+    if qty <= 0:
         return None
     fmt = bybit_orders._fmt
     if probe:

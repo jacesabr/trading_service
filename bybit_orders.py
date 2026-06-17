@@ -27,9 +27,31 @@ import urllib.request
 import db
 
 BASE = os.environ.get("BYBIT_DEMO_BASE", "https://api-demo.bybit.com")
-NOTIONAL_USDT = float(os.environ.get("BYBIT_NOTIONAL", "200"))   # per trade
+NOTIONAL_USDT = float(os.environ.get("BYBIT_NOTIONAL", "200"))   # fallback only
+# Risk-based sizing: each trade risks ~RISK_CAD (entry→stop distance × qty), so a
+# $4k gold trade and a $0.6 alt trade lose the same $ on a stop. Converted to the
+# USDT the venue quotes in. Min qty/notional can force risk above target on some
+# instruments (logged) — that's the floor, not a bug.
+RISK_CAD = float(os.environ.get("RISK_CAD", "1"))
+CAD_USD = float(os.environ.get("CAD_USD", "0.73"))
+RISK_USD = RISK_CAD * CAD_USD
 RECV = "5000"
 CAT = "linear"                                                   # USDT perpetuals
+
+
+def qty_for_risk(entry, stop, it):
+    """Position size so |entry-stop| * qty ≈ RISK_USD, floored to the lot step and
+    raised to the venue minimum. Returns (qty, risk_usd_actual) or (0, 0)."""
+    dist = abs(float(entry) - float(stop))
+    if dist <= 0:
+        return 0.0, 0.0
+    q = _floor_step(RISK_USD / dist, it["qty_step"])
+    if q < it["min_qty"]:
+        q = it["min_qty"]
+    if q * float(entry) < it["min_notional"]:
+        q = _floor_step(it["min_notional"] / float(entry) + it["qty_step"],
+                        it["qty_step"])
+    return q, round(q * dist, 4)
 
 
 def _keys():
@@ -128,10 +150,9 @@ def place_bracket(strat, signal_id, symbol, direction, entry, stop, target,
     if not it:
         print(f"  [bybit] no instrument {symbol}")
         return None
-    qty = _floor_step((notional or NOTIONAL_USDT) / entry, it["qty_step"])
-    if qty < it["min_qty"] or qty * entry < it["min_notional"]:
-        print(f"  [bybit] {symbol} qty {qty} below min "
-              f"(minQty {it['min_qty']}, minNotional {it['min_notional']})")
+    qty, risk = qty_for_risk(entry, stop, it)
+    if qty <= 0:
+        print(f"  [bybit] {symbol} bad geometry/size")
         return None
     body = {"category": CAT, "symbol": symbol,
             "side": "Buy" if direction > 0 else "Sell", "orderType": "Limit",
