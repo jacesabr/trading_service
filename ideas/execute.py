@@ -545,6 +545,52 @@ def migrate_to_bybit(probe=False):
     return moved
 
 
+def audit():
+    """Reconcile the ideas DB against the BROKERS (Bybit/Alpaca) and report any
+    state the broker disagrees with — a correctness guard so our recorded results
+    can't silently drift from the venue's truth. Run after every resolve cycle.
+    Returns {checked, ok, mismatches:[(id, symbol, problem)]}. 0 mismatches = the
+    DB matches the brokers (resolve is keeping us honest)."""
+    rows = db._rows("SELECT * FROM ideas WHERE status IN ('pending','open')")
+    issues, checked = [], 0
+    for r in rows:
+        v, ref = r.get("venue"), (r.get("ref") or "")
+        try:
+            if v == BYBIT_VENUE:
+                checked += 1
+                bsym = route(r["symbol"])
+                if ref.startswith("byb:"):
+                    st = (bybit_orders.order_obj(bsym, ref[4:]) or {}).get("orderStatus")
+                    if st == "Filled":
+                        issues.append((r["id"], bsym, "entry FILLED on Bybit but DB still 'pending'"))
+                    elif st in ("Cancelled", "Rejected", "Deactivated"):
+                        issues.append((r["id"], bsym, f"entry {st} on Bybit but DB still 'pending'"))
+                elif ref.startswith("bybx:"):
+                    _, _eid, tpid, slid = ref.split(":")
+                    tp = (bybit_orders.order_obj(bsym, tpid) or {}).get("orderStatus")
+                    sl = (bybit_orders.order_obj(bsym, slid) or {}).get("orderStatus")
+                    if "Filled" in (tp, sl):
+                        issues.append((r["id"], bsym, "a TP/SL FILLED on Bybit but DB still 'open'"))
+            elif v == ALPACA_VENUE and _alpaca_keys_present():
+                checked += 1
+                oid = ref[len("order:"):]
+                o = equity_orders._api(f"/orders/{oid}?nested=true") if oid else {}
+                legs = o.get("legs") or []
+                if any(l.get("status") == "filled" for l in legs):
+                    issues.append((r["id"], r["symbol"], "Alpaca exit FILLED but DB still 'open'"))
+        except Exception as e:
+            issues.append((r["id"], r.get("symbol"), f"audit error: {str(e)[:80]}"))
+    rep = {"checked": checked, "ok": checked - len(issues), "mismatches": issues}
+    if issues:
+        print(f"[audit] ⚠ {len(issues)}/{checked} ideas DISAGREE with the broker "
+              f"(resolve should fix on the next cycle):")
+        for i, sym, why in issues[:20]:
+            print(f"    idea {i} {sym}: {why}")
+    else:
+        print(f"[audit] ✓ {checked} open/pending ideas match the brokers")
+    return rep
+
+
 def resolve_open(probe=False):
     """Fill pending orders + resolve open ones. (Name kept for daily.py.)"""
     rows = db._rows("SELECT * FROM ideas WHERE status IN ('pending','open')")
@@ -579,7 +625,9 @@ def resolve_open(probe=False):
             n_expired += 1
         if not probe:
             _update(r["id"], **res)
-    return dict(filled=n_filled, resolved=n_resolved, expired=n_expired)
+    rep = audit() if not probe else {"checked": 0, "ok": 0, "mismatches": []}
+    return dict(filled=n_filled, resolved=n_resolved, expired=n_expired,
+                audit_ok=rep["ok"], audit_mismatch=len(rep["mismatches"]))
 
 
 # ─── Main ─────────────────────────────────────────────────────────────────────

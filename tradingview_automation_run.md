@@ -134,14 +134,22 @@ python tradingview_ideas.py run           # place resting orders + fill/resolve 
 > futures testnet from the Frankfurt worker — the next upgrade). Money floor
 > untouched.
 
-### 4. Verify + ship
+### 4. Audit — verify results against the broker (automatic, every `run`)
+`tradingview_ideas.py run` ends by calling `ideas.execute.audit()`, which
+reconciles every open/pending idea against **Bybit/Alpaca** and prints either
+`[audit] ✓ N open/pending ideas match the brokers` or a `⚠ DISAGREE` line per
+mismatch. **A clean audit is the gate** — our recorded P&L/outcomes must equal the
+venue's truth, never our own bookkeeping. If you see a `⚠` line, investigate (a
+recorded result drifted from the broker); a clean ✓ means we're honest.
+
+### 5. Verify + ship
 ```bash
 python tradingview_ideas.py show    # confirm the rows look right
 ```
-The board updates live on the dashboard (open trades show `live @ <fill>`,
-resolved show outcome + bps, with a win/PnL summary line). Commit + deploy as in
-`daily_run.md` (`git push origin master`, then trigger the dashboard + cron
-Render deploys).
+The board updates live on the dashboard. **Ideas we can't execute show as
+"can't execute (no broker API for their market)"** — they are NOT paper-traded
+(no sim fallback). Commit + deploy as in `daily_run.md` (`git push origin master`,
+then trigger the dashboard + cron Render deploys).
 
 ---
 

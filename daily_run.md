@@ -1,8 +1,28 @@
-# daily_run.md — the daily research-lab run (manual, via Claude Code)
+# daily_run.md — the major strategy-analysis run (manual, via Claude Code)
 
-Run this **once a day by hand in Claude Code**. It is the heavy analysis/research
-pass — distinct from the deterministic `daily.py` data cron on Render (every 2h,
-no LLM) that keeps paper positions recording/resolving on its own.
+This is the **main strategy-analysis runbook** (companion to
+`tradingview_automation_run.md`, which handles community ideas). Run it **once a day
+by hand in Claude Code**: the heavy research/validation pass — distinct from the
+deterministic `daily.py` cron on Render (every 2h, no LLM) that places/resolves the
+REAL broker orders on its own.
+
+> **Current state (2026-06-17):** execution is on **real broker demos** now, not
+> local sim — crypto/gold → **Bybit demo**, US equities → **Alpaca paper**. The
+> self-resolved sim lab is **retired** (sim data deleted; `LAB_SIM` off; the
+> `signal-runner` worker suspended). A validated strategy only produces results once
+> it's **wired to a real demo venue** — a backtest/leaktest pass is necessary but no
+> longer sufficient. **Every run ends with the AUDIT** (step 4) so our recorded
+> results can't drift from the brokers'.
+
+> **Research broadly — do NOT default to zone/gap trading.** The current registry is
+> heavily zone/gap-based (`gaptrav*`, `far_targets`, `zone_break*`, gap×meanrev) —
+> a historical bias, not a conclusion. The framework is **signal-agnostic**: a
+> strategy is just a manifest + an arbitrary signal fn; nothing constrains it to
+> zones. Each run, deliberately explore DIFFERENT families — momentum/trend,
+> mean-reversion, breakout, volatility / vol-targeting, carry, order-flow &
+> microstructure, sentiment/news, event-driven, seasonality, statistical/ML,
+> cross-asset/relative-value. Let the data (and the community-ideas track record)
+> decide; don't keep building variations of one idea.
 
 You operate the lab through `lab.py` and the adapters. NVIDIA NIM is the free
 in-code/runtime LLM; **Firecrawl + Tavily** (or built-in web search) do research +
@@ -47,7 +67,19 @@ in `.env`.
    (`built` only when it runs and is verified). This is what keeps the system real
    instead of drifting into undocumented sprawl.
 
-4. **Ship it.** Commit and push to `master`, then trigger the Render deploys so new
+4. **Audit (mandatory — verify results against the brokers).** Our numbers must
+   match the venue's truth, not our own bookkeeping. The TradingView resolve step
+   (`python tradingview_ideas.py run`) and `daily.py` both run `ideas.execute.audit()`
+   automatically, which reconciles every open/pending idea against Bybit/Alpaca and
+   prints `[audit] ✓ N match` or flags each mismatch. For the strategy battery,
+   `equity_orders.resolve_open()` reconciles bracket fills from Alpaca. **Run a
+   resolve cycle and confirm the audit is clean** before shipping; investigate any
+   `⚠ DISAGREE` line (it means a recorded result drifted from the broker).
+   ```
+   python tradingview_ideas.py run     # places/fills/resolves + prints the audit
+   ```
+
+5. **Ship it.** Commit and push to `master`, then trigger the Render deploys so new
    strategies show on the dashboard:
    ```
    curl -s -X POST -H "Authorization: Bearer $RENDER_API_KEY" \
