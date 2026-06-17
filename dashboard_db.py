@@ -419,6 +419,7 @@ details.scard>summary:before{content:'▸';color:var(--up);float:right;font:600 
 details.scard[open]>summary:before{content:'▾'}
 details.scard .ph{display:flex;align-items:center;gap:8px;margin-bottom:10px}
 details.scard .ph h2{font:600 14px var(--mono);color:var(--ink)}
+.sbadge{font:600 9px var(--mono);text-transform:uppercase;letter-spacing:.05em;padding:2px 7px;border-radius:4px;white-space:nowrap}
 .cardsum{display:grid;grid-template-columns:repeat(auto-fit,minmax(78px,1fr));gap:6px 12px}
 .si{display:flex;flex-direction:column;gap:1px}
 .si .sl{font-size:9px;color:var(--dim);text-transform:uppercase;letter-spacing:.04em}
@@ -546,7 +547,9 @@ async function tick(){
   p.innerHTML=`
    <details class=scard>
      <summary>
-       <div class=ph><h2>${c.label}</h2><span class="tag ${tcls(c.status)}">${c.status}</span></div>
+       <div class=ph><h2>${c.label}</h2>${c.group==='live'
+         ?'<span class=sbadge style="background:#13311f;color:var(--up)">● LIVE</span>'
+         :'<span class=sbadge style="background:#1b2336;color:var(--dim)">no fills yet</span>'}</div>
        <div class=cardsum>
          ${si('P&amp;L', has?pnlStr(c):'—', has?pc:'')}
          ${si('Win / Loss', c.hit==null?'—':pct(c.hit), winc)}
