@@ -63,6 +63,47 @@ TF_MIN  = {"1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30,
 MAX_HOLD_BARS = 24            # e.g. a 1h idea holds ≤24h, a 1d idea ≤24 days
 MAX_WAIT_BARS = 12            # un-filled resting order expires after this many TF bars
 
+# Minimum stop distance (as a fraction of price) BELOW which a stop is just noise
+# for that timeframe — a weekly swing can't survive a 1% stop. Used only for the
+# ABSOLUTE-stop venue (Alpaca equities); Bybit is exempt because it re-anchors the
+# bracket to the real fill (see _resolve_bybit). This is the guard that would have
+# killed the NOW −210bps trade (1.5% stop on a 1w idea) before it was ever placed.
+MIN_STOP_FRAC = {"1m": 0.002, "3m": 0.003, "5m": 0.003, "15m": 0.005,
+                 "30m": 0.007, "1h": 0.010, "2h": 0.015, "3h": 0.018,
+                 "4h": 0.020, "6h": 0.025, "8h": 0.030, "12h": 0.035,
+                 "1d": 0.035, "3d": 0.050, "1w": 0.060, "1M": 0.100}
+
+
+def _entry_validity(d, entry, target, stop, px, tf, absolute_stop):
+    """Pre-placement gate: is this idea still tradeable at the LIVE price `px`?
+
+    The cardinal bug this prevents: we place a LIMIT bracket at the author's entry.
+    If the entry is on the wrong side of `px`, that limit is *marketable* — it fills
+    NOW at the market, not at the drawn level — and a stop sized to the intended
+    entry lands on top of the real fill → an instant, meaningless stop-out.
+
+    Returns (ok: bool, reason: str). `absolute_stop` True = the venue submits the
+    author's stop price verbatim (Alpaca); False = the venue re-anchors to the fill
+    (Bybit), so the timeframe min-stop floor doesn't apply."""
+    if px is None or px <= 0:
+        return True, "no live price — placing unchecked"
+    # marketable: long entry at/above market, or short entry at/below market.
+    marketable = (entry - px) * d >= 0
+    if not marketable:
+        return True, f"resting limit @ {entry} (waits for the level; live {px})"
+    # It WILL fill ~now at px, not at `entry`. Validate the setup against px.
+    if (target - px) * d <= 0:
+        return False, f"target {target} already reached at live {px} — setup played out"
+    if (px - stop) * d <= 0:
+        return False, f"live {px} already at/through stop {stop} — setup invalidated"
+    if absolute_stop:
+        room = abs(px - stop) / px
+        floor = MIN_STOP_FRAC.get(tf, 0.010)
+        if room < floor:
+            return False, (f"stop {stop} only {room*100:.2f}% from live {px} "
+                           f"(< {floor*100:.1f}% floor for {tf}) — would be noise-stopped")
+    return True, f"marketable fill ~{px}, stop room ok"
+
 
 # ─── Binance public data (keyless; works from any region) ─────────────────────
 def _get(url, timeout=20):
@@ -155,6 +196,20 @@ def _alpaca_asset(symbol):
     return a if isinstance(a, dict) and not a.get("err") else {}
 
 
+def _alpaca_price(symbol):
+    """Latest trade price for an equity from the Alpaca data API, or None. Used by
+    the pre-placement validity gate to detect a marketable (wrong-side) entry."""
+    try:
+        url = f"https://data.alpaca.markets/v2/stocks/{symbol}/trades/latest"
+        req = urllib.request.Request(url, headers=equity_orders._hdr())
+        d = json.loads(urllib.request.urlopen(req, timeout=15).read())
+        p = float(d.get("trade", {}).get("p") or 0)
+        return p or None
+    except Exception as e:
+        print(f"  [exec] alpaca price {symbol} failed: {e}")
+        return None
+
+
 def route_equity(symbol):
     """TradingView symbol → a tradable Alpaca US-equity symbol, or None.
 
@@ -220,7 +275,10 @@ def _resolve_equity(r):
         entry = float(o.get("filled_avg_price") or r["entry"])
         d = 1 if r["direction"] > 0 else -1
         ret = d * (exitp - entry) / entry * 1e4
-        outcome = "target" if leg.get("type") == "limit" else "stop"
+        # Label by P&L sign, not by which OCO leg filled: a drifted fill can let the
+        # "stop" leg exit in profit (the GOOGL +27bps "stop" bug). Honest audit ==
+        # win/loss tracks the money, never the leg type.
+        outcome = "target" if ret >= 0 else "stop"
         return dict(status="resolved", outcome=outcome, ret_bps=round(ret, 1),
                     exec_entry=round(entry, 2), bars_held=0)
     pstatus = o.get("status")
@@ -316,14 +374,14 @@ def _resolve_bybit(r):
             exitp = float(tp.get("avgPrice") or r["target"])
             bybit_orders.cancel(bsym, slid)
             ret = d * (exitp - entry) / entry * 1e4 if entry else 0.0
-            return dict(status="resolved", outcome="target", ret_bps=round(ret, 1),
-                        exec_entry=round(entry, 6), bars_held=0)
+            return dict(status="resolved", outcome="target" if ret >= 0 else "stop",
+                        ret_bps=round(ret, 1), exec_entry=round(entry, 6), bars_held=0)
         if (sl or {}).get("orderStatus") == "Filled":
             exitp = float(sl.get("avgPrice") or r["stop"])
             bybit_orders.cancel(bsym, tpid)
             ret = d * (exitp - entry) / entry * 1e4 if entry else 0.0
-            return dict(status="resolved", outcome="stop", ret_bps=round(ret, 1),
-                        exec_entry=round(entry, 6), bars_held=0)
+            return dict(status="resolved", outcome="target" if ret >= 0 else "stop",
+                        ret_bps=round(ret, 1), exec_entry=round(entry, 6), bars_held=0)
         return None
 
     return None
@@ -390,8 +448,21 @@ def work_orders(probe=False):
             continue
 
         side = "LONG" if d == 1 else "SHORT"
+        tf = r["timeframe"]
         bsym = route(r["symbol"])                      # 1) crypto / gold (→PAXGUSDT)
         if bsym:
+            # pre-placement gate: Bybit re-anchors TP/SL to the fill, so the abs-stop
+            # floor doesn't apply, but a setup whose level is already breached should
+            # still be invalidated rather than entered at a marketable price.
+            ok, why = _entry_validity(d, float(r["entry"]), float(r["target"]),
+                                      float(r["stop"]), live_mid(bsym), tf,
+                                      absolute_stop=False)
+            if not ok:
+                print(f"  idea {r['id']} {bsym}: {why} -> invalidated")
+                if not probe:
+                    _update(r["id"], status="invalidated")
+                n_bad += 1
+                continue
             oid = _place_crypto_bybit(r, bsym, probe=probe)   # 1a) REAL Bybit demo
             if oid and oid != "probe":
                 print(f"  idea {r['id']} {bsym}: BYBIT {side} limit entry={r['entry']} "
@@ -416,6 +487,19 @@ def work_orders(probe=False):
 
         esym = route_equity(r["symbol"])               # 2) equity -> Alpaca paper
         if esym:
+            # pre-placement gate: Alpaca submits the author's stop verbatim, so a
+            # marketable (wrong-side) entry strands the stop on the real fill. Reject
+            # already-breached setups AND stops too tight for the timeframe (this is
+            # the guard that kills the NOW −210bps placement before it happens).
+            ok, why = _entry_validity(d, float(r["entry"]), float(r["target"]),
+                                      float(r["stop"]), _alpaca_price(esym), tf,
+                                      absolute_stop=True)
+            if not ok:
+                print(f"  idea {r['id']} {esym}: {why} -> invalidated")
+                if not probe:
+                    _update(r["id"], status="invalidated")
+                n_bad += 1
+                continue
             oid = _place_equity_bracket(r, esym, probe=probe)
             if oid:
                 print(f"  idea {r['id']} {esym}: ALPACA {side} limit bracket "

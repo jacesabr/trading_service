@@ -108,6 +108,68 @@ For **each** idea in that list, in this Claude Code session:
      + the visible price + structure, and tag it `--basis generated` so it's never
      confused with the author's own call.
 
+### 2.5 Stop & target discipline (READ THIS — it is where we were losing money)
+**Every resolved loss to date came from sloppy level-setting at this step, not bad
+market calls** (see `docs/TRADE_AUDIT.md`). The `$NOW` weekly long was recorded a
+−210bps "stop" though price never broke the author's trendline — because the stop
+was put at an arbitrary number 1.5% under a marketable fill instead of below the
+structural support. Follow these rules; they are hard rules, not suggestions.
+
+**Read the trade the AUTHOR drew — do not invent levels.**
+- The stop goes **beyond the structural invalidation the author drew**, not a round
+  number near the entry. For a LONG: just **below the local support / demand zone /
+  the trendline whose break kills the thesis** (a few ticks past it so a wick
+  doesn't trip it). For a SHORT: just **above the local resistance / the swing
+  high**. Find the *nearest* swing low/high or zone edge that price must hold for
+  the idea to remain valid, and place the stop the far side of it.
+- The target goes at the **next opposing structure** (resistance for a long, support
+  for a short) the author is aiming at — read it off the chart, don't extrapolate.
+- **The idea must NOT already be played out.** If price has already reached the
+  target, or already broken past the stop level, the setup is dead → leave it
+  `needs_vision`/skip; do not set levels. ("Price never broke the trendline" must be
+  true *at entry*, or there is no trade.)
+- **Entry vs live price decides the order, and we only place two kinds:**
+  - **Pullback / limit entry** — long entry *below* live price, short entry *above*
+    it. Good: it rests and fills exactly at the level.
+  - **Breakout entry** — long entry *above* live, short entry *below*. ⚠ A bracket
+    cannot rest a stop-entry (Alpaca rejects it), so a limit there fills *immediately
+    at the current price*, not at the breakout. Only set a breakout entry if the
+    **current price** already gives a valid trade (stop still structurally beyond the
+    live price, with timeframe-appropriate room). Otherwise set the entry **at/just
+    inside the live price** so it's an honest pullback entry, and keep the same
+    structural stop/target.
+- **Timeframe-appropriate stop distance (floor).** A stop tighter than this for the
+  timeframe is noise and will be auto-**invalidated** by `execute.py` — widen it to
+  real structure or skip: 5m ≈ 0.3%, 15m ≈ 0.5%, 30m ≈ 0.7%, 1h ≈ 1%, 4h ≈ 2%,
+  1d ≈ 3.5%, **1w ≈ 6%**, 1M ≈ 10% (of price). A weekly idea with a 1–2% stop is
+  always wrong.
+- **Account for broker price drift.** Our fill is on Bybit/Alpaca, not TradingView's
+  feed — expect the live price to differ from the author's chart by tenths of a
+  percent to a couple percent, and on illiquid names more. Never set a stop so close
+  that this drift alone stops you. Bybit re-anchors TP/SL to the real fill
+  (RR preserved); Alpaca uses the **absolute** stop you set, so on equities the stop
+  must already be far enough from the *current* price, not just from the entry.
+
+**Write a justification box with every `set`** so the trade is auditable. Put it in
+the commit message / run notes for that idea, in this format:
+
+```
+┌─ #<id> <SYMBOL> · <LONG|SHORT> · <tf> · <venue> ─────────────────────────┐
+│ live px: <price at the time you set levels>                              │
+│ entry  <E>  — <why: at the trendline / pullback to demand / current px>  │
+│ stop   <S>  — <which support/resistance it sits beyond, + % from entry>  │
+│ target <T>  — <which opposing structure it aims at>                       │
+│ RR: <(T−E)/(E−S)>   invalidation: <the line/zone whose break kills it>   │
+│ entry type: <resting limit | marketable-now> ; drift checked: <yes/px>   │
+└──────────────────────────────────────────────────────────────────────────┘
+```
+
+The `run` step (below) enforces a machine version of these rules: `_entry_validity`
+in `ideas/execute.py` rejects any idea whose level is already breached or whose stop
+is tighter than the timeframe floor, so a careless read can no longer place a
+self-destructing order. The box is how a human auditor checks the *judgement* behind
+the numbers the machine couldn't.
+
 ### 3. Execute + resolve (P3 — `tradingview_ideas.py run`)
 ```bash
 python tradingview_ideas.py run --probe   # preview: route + which fill / invalidate
@@ -118,8 +180,12 @@ python tradingview_ideas.py run           # place resting orders + fill/resolve 
   away because the live price hasn't reached the entry. Routed by asset:
   - **crypto** → `binance_sim` (resolved on Binance klines)
   - **US equity** → **real Alpaca paper bracket (OCO)** order
-- **Invalidated:** only if the bracket geometry is impossible (target/stop on the
-  wrong side of entry). **No venue:** FX/metals/unsupported symbols.
+- **Invalidated:** if the bracket geometry is impossible (target/stop on the wrong
+  side of entry) **OR the pre-placement gate (`_entry_validity`) rejects it** — i.e.
+  at the live price the target is already reached, the stop is already breached, or
+  (equities) the stop is tighter than the timeframe floor (`MIN_STOP_FRAC`). This is
+  the rail that stops a marketable wrong-side entry from stranding the stop on the
+  fill (the NOW/GOOGL/AAPL losses). **No venue:** FX/metals/unsupported symbols.
 - **Fill + resolve:** crypto walks the real **1m klines** from when we saw the
   idea — first bar to touch the entry fills it, then the first to touch target →
   win / stop → loss (a bar straddling both = loss, pessimistic); past max-hold →
