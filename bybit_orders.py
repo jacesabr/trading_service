@@ -27,11 +27,15 @@ import urllib.request
 import db
 
 BASE = os.environ.get("BYBIT_DEMO_BASE", "https://api-demo.bybit.com")
-NOTIONAL_USDT = float(os.environ.get("BYBIT_NOTIONAL", "200"))   # fallback only
-# Risk-based sizing: each trade risks ~RISK_CAD (entry→stop distance × qty), so a
-# $4k gold trade and a $0.6 alt trade lose the same $ on a stop. Converted to the
-# USDT the venue quotes in. Min qty/notional can force risk above target on some
-# instruments (logged) — that's the floor, not a bug.
+# Sizing mode:
+#   'notional' (DEMO, default) — fixed ~$NOTIONAL_USDT per trade. Bounded, safe on
+#       the demo balance regardless of stop distance.
+#   'risk'     (LIVE)          — size so entry→stop × qty ≈ RISK_CAD (the real-money
+#       goal: lose the same $ on every stop). Flip BYBIT_SIZE_MODE=risk + RISK_CAD
+#       when going live. (Only viable on %-fee venues — flat per-trade/overnight
+#       fees would dwarf a $1 trade; Bybit perps charge % taker + % funding.)
+SIZE_MODE = os.environ.get("BYBIT_SIZE_MODE", "notional")
+NOTIONAL_USDT = float(os.environ.get("BYBIT_NOTIONAL", "100"))   # demo size/trade
 RISK_CAD = float(os.environ.get("RISK_CAD", "1"))
 CAD_USD = float(os.environ.get("CAD_USD", "0.73"))
 RISK_USD = RISK_CAD * CAD_USD
@@ -39,18 +43,25 @@ RECV = "5000"
 CAT = "linear"                                                   # USDT perpetuals
 
 
-def qty_for_risk(entry, stop, it):
-    """Position size so |entry-stop| * qty ≈ RISK_USD, floored to the lot step and
-    raised to the venue minimum. Returns (qty, risk_usd_actual) or (0, 0)."""
-    dist = abs(float(entry) - float(stop))
-    if dist <= 0:
-        return 0.0, 0.0
-    q = _floor_step(RISK_USD / dist, it["qty_step"])
+def _bump_to_min(q, entry, it):
     if q < it["min_qty"]:
         q = it["min_qty"]
     if q * float(entry) < it["min_notional"]:
         q = _floor_step(it["min_notional"] / float(entry) + it["qty_step"],
                         it["qty_step"])
+    return q
+
+
+def position_qty(entry, stop, it):
+    """Order qty by the active sizing mode. Returns (qty, risk_usd) or (0, 0)."""
+    dist = abs(float(entry) - float(stop))
+    if dist <= 0:
+        return 0.0, 0.0
+    if SIZE_MODE == "risk":
+        q = _floor_step(RISK_USD / dist, it["qty_step"])          # ~RISK_CAD on a stop
+    else:
+        q = _floor_step(NOTIONAL_USDT / float(entry), it["qty_step"])  # ~$NOTIONAL
+    q = _bump_to_min(q, entry, it)
     return q, round(q * dist, 4)
 
 
@@ -150,7 +161,7 @@ def place_bracket(strat, signal_id, symbol, direction, entry, stop, target,
     if not it:
         print(f"  [bybit] no instrument {symbol}")
         return None
-    qty, risk = qty_for_risk(entry, stop, it)
+    qty, risk = position_qty(entry, stop, it)
     if qty <= 0:
         print(f"  [bybit] {symbol} bad geometry/size")
         return None
