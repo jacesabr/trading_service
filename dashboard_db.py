@@ -36,7 +36,7 @@ PUBLIC_KEYS = {
     "net_bps", "ev", "avg_entry", "rw_base", "edge_pp", "recent", "venues",
     "spread_bps", "spread_n", "fee_bps", "cal",
     "platform", "mode", "pnl_total", "rank_score", "confidence",
-    "group", "real",
+    "group", "real", "broker", "since_ts", "avg_rr", "n_open",
 }
 
 
@@ -215,46 +215,49 @@ def _build_cards():
                 card["pnl_total"] = round(net_cum, 1)            # cumulative net bps
                 card["rank_score"] = round(gross - cost, 2)      # net bps / trade
 
-        # real-venue executions for this strategy (fill already crossed the
-        # venue's real spread -> net only deducts the fee)
+        # REAL broker fills only — the lab is real-execution now (sim deleted).
+        # order:=Alpaca crypto round-trip · bracket:=Alpaca equity OCO · byb*=Bybit
+        # demo. ret_bps is the realized round-trip (real spread already in the fill).
         ex = [e for e in execs if e["strategy"] == name]
-        if ex:
-            vmap = {}
-            for e in ex:
-                vmap.setdefault(e["venue"], []).append(e)
-            card["venues"] = {
-                v: dict(n=len(rs),
-                        hit=round(float(np.mean([r["won"] for r in rs])), 3),
-                        net_bps=round(float(np.mean([r["ret_bps"] for r in rs]))
-                                      - FEE_BPS, 1))
-                for v, rs in vmap.items()}
-        # REAL broker orders (alpaca_exec): actual placed + filled demo trades
-        # (ref='order:<id>'), as opposed to quote-cross snapshots. A strategy
-        # with these is a live system "making real demo trades" -> it floats to
-        # the top group. ret_bps here is the realized round-trip (the real spread
-        # is already in the fills), so it IS the net — no extra cost deducted.
-        real = [e for e in ex if (e.get("ref") or "").startswith("order:")]
+        real = [e for e in ex if (e.get("ref") or "").startswith(("order:", "bracket:", "byb"))]
         if real:
-            rr = np.array([e["ret_bps"] for e in real], float)
-            rw = np.array([e["won"] for e in real], float)
-            card["real"] = dict(n=len(real), venue=real[0]["venue"],
-                                hit=round(float(rw.mean()), 4),
-                                net_bps=round(float(rr.mean()), 1),
-                                pnl=round(float(rr.sum()), 1))
-            card["rank_score"] = round(float(rr.mean()), 2)   # rank live by REAL P&L
-        card["group"] = "live" if real else "paper"
-        card["confidence"] = _why(meta, card)
-        out["strategies"][name] = card
-    # Systems making REAL broker demo trades (real fills) float to the TOP;
-    # within each group, sort most -> least profitable.
-    items = list(out["strategies"].items())
-    key = lambda kv: kv[1].get("rank_score", -1e12)
-    live = sorted([kv for kv in items if kv[1].get("group") == "live"],
-                  key=key, reverse=True)
-    paper = sorted([kv for kv in items if kv[1].get("group") != "live"],
-                   key=key, reverse=True)
-    out["strategies"] = dict(live + paper)
-    out["live_count"] = len(live)
+            res = [e for e in real if e.get("outcome") not in (None, "", "void")]
+            ret = np.array([e["ret_bps"] or 0 for e in
+                            sorted(res, key=lambda e: e["ts"])], float)
+            won = np.array([1.0 if (e.get("won") or (e.get("ret_bps") or 0) > 0)
+                            else 0.0 for e in res], float)
+            rr_list = [abs(e["target"] - e["entry"]) / abs(e["entry"] - e["stop"])
+                       for e in real if e.get("target") and e.get("stop")
+                       and e.get("entry") and abs(e["entry"] - e["stop"]) > 0]
+            vlist = [e["venue"] for e in real]
+            broker_v = max(set(vlist), key=vlist.count)
+            card.update(
+                n=len(res), n_open=len(real) - len(res), unit="bps", mode="demo",
+                broker=BROKER_NAME.get(broker_v, broker_v), venue=broker_v,
+                hit=round(float(won.mean()), 4) if len(won) else None,
+                net_bps=round(float(ret.mean()), 1) if len(ret) else None,
+                pnl_total=round(float(ret.sum()), 1) if len(ret) else 0,
+                avg_rr=round(float(np.mean(rr_list)), 2) if rr_list else None,
+                since_ts=min(e["ts"] for e in real),
+                last_age_min=_age_min(max(e["ts"] for e in real), now),
+                equity=np.round(np.cumsum(ret), 1).tolist() if len(ret) else [],
+                recent=[dict(t=e["ts"], symbol=e["symbol"], side=e["side"],
+                             entry=e["entry"], exit=e.get("exit"),
+                             outcome=e.get("outcome") or "open", ret_bps=e["ret_bps"])
+                        for e in sorted(real, key=lambda e: e["ts"], reverse=True)[:25]])
+            card["rank_score"] = round(float(ret.mean()), 2) if len(ret) else -0.5
+            card["group"] = "live"
+            card["confidence"] = (f"Real {card['broker']} demo fills — broker-executed "
+                                  f"(entry, exit & P&L from the venue), not local sim. "
+                                  f"n={len(res)}" + (f", {len(real)-len(res)} open."
+                                  if len(real) > len(res) else "."))
+            out["strategies"][name] = card
+        # strategies with NO real broker fills are omitted — real-only view.
+    # most -> least profitable
+    items = sorted(out["strategies"].items(),
+                   key=lambda kv: kv[1].get("rank_score", -1e12), reverse=True)
+    out["strategies"] = dict(items)
+    out["live_count"] = len(items)
     return out
 
 
@@ -275,7 +278,8 @@ IDEA_NOTIONAL = float(os.environ.get("IDEA_NOTIONAL", "10000"))
 # at $4k and BTC at $66k directly comparable. Tune with IDEA_RISK_USD.
 IDEA_RISK_USD = float(os.environ.get("IDEA_RISK_USD", "100"))
 BROKER_NAME = {"alpaca": "Alpaca paper", "binance_sim": "Binance (sim)",
-               "oanda": "OANDA", "kraken": "Kraken paper"}
+               "oanda": "OANDA", "kraken": "Kraken paper",
+               "bybit_demo": "Bybit demo", "binance_futures": "Binance futures demo"}
 
 
 @app.route("/api/ideas")
@@ -474,6 +478,21 @@ details[open]#det_ongoing>summary:before,details[open] >summary:before{content:'
 .tw{overflow-x:auto;padding:0 6px 6px}
 .broker{font-size:10px;padding:1px 6px;border-radius:3px;font-weight:600;white-space:nowrap}
 .broker-alpaca{background:#13314d;color:#5fa8e0}.broker-sim{background:#2d2740;color:#b39ddb}
+/* collapsible strategy cards */
+details.scard{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+details.scard[open]{border-color:var(--up);box-shadow:0 0 0 1px rgba(63,182,139,.2)}
+details.scard>summary{cursor:pointer;list-style:none;padding:12px 14px}
+details.scard>summary::-webkit-details-marker{display:none}
+details.scard>summary:before{content:'▸';color:var(--up);float:right;font:600 13px var(--mono)}
+details.scard[open]>summary:before{content:'▾'}
+details.scard .ph{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+details.scard .ph h2{font:600 14px var(--mono);color:var(--ink)}
+.cardsum{display:grid;grid-template-columns:repeat(auto-fit,minmax(78px,1fr));gap:6px 12px}
+.si{display:flex;flex-direction:column;gap:1px}
+.si .sl{font-size:9px;color:var(--dim);text-transform:uppercase;letter-spacing:.04em}
+.si .sv{font:600 14px var(--mono);font-variant-numeric:tabular-nums}
+.carddetail{padding:0 14px 14px;border-top:1px solid var(--line);margin-top:2px}
+.carddetail .method{margin:10px 0}
 </style>
 <h1>STRATEGY TRACKER</h1>
 <div class=sub id=sub>loading…</div>
@@ -496,10 +515,9 @@ details[open]#det_ongoing>summary:before,details[open] >summary:before{content:'
   <div class=empty id=empty_prev style="display:none">No closed trades yet.</div>
 </details>
 
-<h2 class=sec id=sec_live><span class="livedot"></span>LIVE — real broker orders <small>· actual filled demo trades (Alpaca paper), most → least profitable</small></h2>
+<h2 class=sec id=sec_live><span class="livedot"></span>STRATEGIES — real broker results <small>· click a card to expand · broker-executed demo fills only, most → least profitable</small></h2>
 <div class=grid id=grid_live></div>
-<h2 class=sec id=sec_paper>PAPER — simulation <small>· resolved from real bars, no orders placed · most → least profitable</small></h2>
-<div class=grid id=grid_paper></div>
+<div class=empty id=no_strats style="display:none">No strategy has real broker fills yet — results appear once a live demo order resolves.</div>
 <script>
 const pct=x=>x==null?'—':(100*x).toFixed(1)+'%';
 const f=(x,d=2)=>x==null?'—':Number(x).toFixed(d);
@@ -567,47 +585,57 @@ function baseline(c){
    · <span class="${real?'pos':'neg'}">edge ${c.edge_pp>0?'+':''}${c.edge_pp}pp</span>
    <span style="color:var(--dim)">(target=intrabar touch, stop=close)</span></div>`;
 }
+function pnlStr(c){ const v=c.pnl_total; if(v==null) return '—';
+  return c.unit==='$' ? ((v>=0?'+$':'−$')+Math.abs(v).toFixed(2)) : ((v>=0?'+':'')+v+' bps'); }
+function runtimeStr(ts){ if(!ts) return '—'; let s=Math.max(0,Math.floor(Date.now()/1000-ts));
+  const d=Math.floor(s/86400); s-=d*86400; const h=Math.floor(s/3600); const m=Math.floor((s-h*3600)/60);
+  return d?`${d}d ${h}h`:(h?`${h}h ${m}m`:`${m}m`); }
+function si(l,v,cls){ return `<div class=si><span class=sl>${l}</span><span class="sv ${cls||''}">${v}</span></div>`; }
+function buildChart(name,c){ const ctx=document.getElementById('cv_'+name); if(!ctx||!c.equity||!c.equity.length) return;
+  const col=c.equity[c.equity.length-1]>=0?'#3FB68B':'#E0556B';
+  if(charts[name]){charts[name].data.labels=c.equity.map((_,i)=>i+1);charts[name].data.datasets[0].data=c.equity;
+    charts[name].data.datasets[0].borderColor=col;charts[name].update('none');return;}
+  charts[name]=new Chart(ctx,{type:'line',data:{labels:c.equity.map((_,i)=>i+1),
+    datasets:[{data:c.equity,borderColor:col,pointRadius:0,tension:.2}]},
+    options:{plugins:{legend:{display:false},title:{display:true,text:'cumulative bps',color:'#8593AC',font:{size:10}}},
+      scales:{x:{display:false},y:{grid:{color:'#1E2A44'}}}}}); }
 async function tick(){
  const s=await(await fetch('/api/stats')).json();
  document.getElementById('sub').textContent='updated '+new Date(s.last_update*1000).toLocaleTimeString();
- const gl=document.getElementById('grid_live'), gp=document.getElementById('grid_paper');
- let nlive=0;
+ const gl=document.getElementById('grid_live'), names=Object.keys(s.strategies);
+ document.getElementById('no_strats').style.display=names.length?'none':'';
+ document.getElementById('sec_live').style.display=names.length?'':'';
  for(const [name,c] of Object.entries(s.strategies)){
-  const live=c.group==='live'; if(live) nlive++;
   let p=document.getElementById('p_'+name);
-  if(!p){p=document.createElement('div');p.id='p_'+name;}
-  p.className='panel'+(live?' livecard':'');
-  const alive=c.last_age_min!=null&&c.last_age_min<180;
-  const armed=c.pending>0;
+  if(!p){p=document.createElement('div');p.id='p_'+name;gl.appendChild(p);}  // preserve order
+  const winc=c.hit==null?'':(c.hit>=0.5?'pos':'neg'), pc=(c.pnl_total||0)>=0?'pos':'neg';
+  const tradesTxt=(c.n||0)+(c.n_open?` <span style="color:var(--dim)">(+${c.n_open})</span>`:'');
   p.innerHTML=`
-   <div class=ph><h2>${c.label}</h2><span class="tag ${tcls(c.status)}">${c.status}</span></div>
-   <div class=status><span class=dot style="background:${alive?'var(--live)':'var(--dim)'}"></span>
-     ${c.last_age_min!=null?('last signal '+f(c.last_age_min,0)+'m ago'):'no signals yet'}
-     · ${c.pending} pending${armed?' · armed':''} · ${c.symbols}</div>
-   <div class=method><b style="color:var(--ink)">${c.platform||c.venue||''}</b>
-     <span class=paper>${(c.mode||'paper').toUpperCase()}</span>
-     · ${c.domain||''} · ${c.kind||''}</div>
-   ${realLine(c)}
-   ${c.n?pnlLine(c)+kpis(c)+baseline(c)+(c.unit==='bps'?costnote(c):'')+venuesLine(c)+'<canvas id="cv_'+name+'"></canvas>'+confLine(c)+rowsTable(c):'<div class=empty>No resolved trades yet.</div>'}
-   <div class=risk>🔒 method, parameters &amp; research are private — <a href="/admin" style="color:var(--live)">admin</a> for the full record.</div>`;
-  (live?gl:gp).appendChild(p);    // route + keep profit order (API order)
-  if(c.n&&c.equity){
-   const ctx=document.getElementById('cv_'+name);
-   const col=c.equity[c.equity.length-1]>=0?'#3FB68B':'#E0556B';
-   if(charts[name]){charts[name].data.labels=c.equity.map((_,i)=>i+1);
-     charts[name].data.datasets[0].data=c.equity;
-     charts[name].data.datasets[0].borderColor=col;charts[name].update('none');}
-   else charts[name]=new Chart(ctx,{type:'line',
-     data:{labels:c.equity.map((_,i)=>i+1),
-       datasets:[{data:c.equity,borderColor:col,pointRadius:0,tension:.2,
-         label:'cum '+(c.unit==='$'?'P&L $':'bps')}]},
-     options:{plugins:{legend:{display:false},
-       title:{display:true,text:'cumulative '+(c.unit==='$'?'P&L $':'bps'),color:'#8593AC',font:{size:10}}},
-       scales:{x:{display:false},y:{grid:{color:'#1E2A44'}}}}});
-  }
+   <details class=scard>
+     <summary>
+       <div class=ph><h2>${c.label}</h2><span class="tag ${tcls(c.status)}">${c.status}</span></div>
+       <div class=cardsum>
+         ${si('P&amp;L', pnlStr(c), pc)}
+         ${si('Win / Loss', c.hit==null?'—':pct(c.hit), winc)}
+         ${si('Trades', tradesTxt)}
+         ${si('Avg R:R', c.avg_rr==null?'—':c.avg_rr)}
+         ${si('Broker', c.broker||c.venue||'—')}
+         ${si('Running', runtimeStr(c.since_ts))}
+       </div>
+     </summary>
+     <div class=carddetail>
+       <div class=method><b style="color:var(--ink)">${c.broker||c.venue||''}</b>
+         <span class=paper>${(c.mode||'demo').toUpperCase()}</span> · ${c.domain||''} · ${c.kind||''}
+         ${c.symbols?'· '+c.symbols:''}</div>
+       ${c.n?('<canvas id="cv_'+name+'"></canvas>'+rowsTable(c))
+            :('<div class=empty>'+(c.n_open?c.n_open+' open · none resolved yet.':'No resolved trades yet.')+'</div>')}
+       ${c.confidence?`<div class=conf>✓ ${c.confidence}</div>`:''}
+       <div class=risk>🔒 method, parameters &amp; research are private — <a href="/admin" style="color:var(--live)">admin</a> for the full record.</div>
+     </div>
+   </details>`;
+  const det=p.querySelector('details');
+  det.addEventListener('toggle',()=>{ if(det.open) buildChart(name,c); });
  }
- document.getElementById('sec_live').style.display=nlive?'':'none';
- document.getElementById('grid_live').style.display=nlive?'':'none';
 }
 function ideaDir(d){return d===1?'<span class=b-long>LONG</span>':d===-1?'<span class=b-short>SHORT</span>':'<span class=b-none>—</span>';}
 function px(v){return (v==null||v===0)?'—':Number(v).toLocaleString(undefined,{maximumFractionDigits:2});}
