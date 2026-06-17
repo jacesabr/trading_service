@@ -4,6 +4,26 @@ Autonomous strategy research lab + live paper-tracking system. Read this first,
 then **docs/INFRA.html** for the living architecture, **docs/STRATEGY.md** for the
 error audit, and **daily_run.md** for the daily research procedure.
 
+## ⭐ Current state (2026-06-17) — REAL broker demo, local sim retired
+The system no longer self-reports fills from klines/bars. Every tracked trade is
+placed on a real broker **demo/paper** API (broker-confirmed entry, exit & P&L):
+- **Crypto + gold** (XAUUSD/GOLD → PAXGUSDT) → **Bybit demo** (`api-demo.bybit.com`,
+  hedge mode, per-idea LIMIT entry + reduce-only conditional TP/SL, long **and**
+  short). Code: **bybit_orders.py**. Keys `BYBIT_DEMO_KEY/SECRET`, arm with
+  `BYBIT_DEMO_ORDERS=1`.
+- **US equities** → **Alpaca paper** bracket OCO (**equity_orders.py**, `ALPACA_*`).
+- `binance_sim` is now only a dev fallback when Bybit is unarmed.
+- The self-resolved **SIM lab is RETIRED**: all sim `bets`/`trades` were deleted,
+  `daily.py` gates sim collection behind `LAB_SIM` (default off), and the
+  `signal-runner` worker is **suspended**. The dashboard shows **real fills only**.
+- **Sizing:** demo = ~$100/trade notional (`BYBIT_SIZE_MODE=notional`). For the LIVE
+  goal of **$1 CAD risk/trade**, flip `BYBIT_SIZE_MODE=risk` + `RISK_CAD` — only
+  viable on %-fee venues (no flat/overnight fees); Bybit perps fit. Live venue
+  research is in docs/DEPLOY.md.
+- meanrev/Polymarket is **demoted** (live paper refuted it — see bottom). Treat the
+  historical "Strategies"/"Settled negative" sections below as the research record,
+  not current execution.
+
 ## What this project is
 A self-operating lab that discovers, validates, paper-tracks, and (gated, off)
 could live-trade short-horizon signals across many markets: crypto (Binance),
@@ -61,12 +81,15 @@ how good the in-sample number looks.
   - ideas/scrape.py — P1–P2: scrape via Tavily + store in the `ideas` table +
     extract levels. Vision is **manual** — Claude Code reads the chart images and
     writes levels back (`set`); the VLM path is wired for later.
-  - ideas/execute.py — P3 demo execution: route symbol→Binance pair, place a
-    limit/stop order at the author's entry, fill + resolve the bracket on real 1m
-    klines (no-lookahead, long+short). Venue `binance_sim` (real prices, honest
-    sim, not a broker fill). Lifecycle in `ideas.status`:
-    extracted→pending→open→resolved (+ invalidated/no_venue/expired).
-- executor.py / forex_oanda.py / kalshi_paper.place_live — live order layers,
+  - ideas/execute.py — P3 demo execution: route each idea by asset and place a REAL
+    broker demo order at the author's entry, broker holds the TP/SL. Crypto+gold →
+    **Bybit demo** (bybit_orders.py); US equities → **Alpaca paper** bracket
+    (equity_orders.py); `binance_sim` only as a dev fallback. Lifecycle in
+    `ideas.status`: extracted→pending→open→resolved (+ invalidated/no_venue/expired).
+    `--migrate-bybit` moves an existing book onto Bybit.
+- bybit_orders.py — REAL Bybit demo crypto/gold venue (the active crypto path).
+  equity_orders.py — REAL Alpaca paper equity brackets.
+- executor.py / forex_oanda.py / kalshi_paper.place_live — older live order layers,
   all gated (LIVE_BUDGET_ARMED). Don't loosen rails.
 - LEGACY one-off backtests (superseded by lab.py/harness, kept for reference, now
   in **legacy/**, run via `python -m legacy.<name>`): legacy/gap_next5m.py,

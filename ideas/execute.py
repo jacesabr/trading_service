@@ -404,18 +404,14 @@ def work_orders(probe=False):
             if oid == "probe":
                 n_work += 1
                 continue
-            if bybit_orders.armed():                   # 1b) armed but unplaceable → no_venue
-                print(f"  idea {r['id']} {bsym}: Bybit could not place "
-                      f"(not listed / reject) -> no_venue")
-                if not probe:
-                    _update(r["id"], status="no_venue")
-                n_noven += 1
-                continue
-            print(f"  idea {r['id']} {bsym}: ORDER {side} entry={r['entry']} "    # 1c) dev sim
-                  f"tp={r['target']} sl={r['stop']} tf={r['timeframe']} -> pending (sim)")
+            # Couldn't place on a real broker API → NO paper-trading fallback.
+            # Mark no_venue so the board shows "can't execute (no API)".
+            why = "Bybit not armed (no API key)" if not bybit_orders.armed() \
+                else "not listed on Bybit / order rejected"
+            print(f"  idea {r['id']} {bsym}: cannot execute — {why} -> no_venue")
             if not probe:
-                _update(r["id"], status="pending", venue=VENUE)
-            n_work += 1
+                _update(r["id"], status="no_venue")
+            n_noven += 1
             continue
 
         esym = route_equity(r["symbol"])               # 2) equity -> Alpaca paper
@@ -559,8 +555,8 @@ def resolve_open(probe=False):
             res = _resolve_equity(r)
         elif r.get("venue") == BYBIT_VENUE:           # real Bybit demo order
             res = _resolve_bybit(r)
-        else:                                         # binance_sim (kline walk)
-            res = _evaluate(r, now_ms)
+        else:                                         # no real broker → don't sim-resolve
+            res = None
         if not res:
             print(f"  idea {r['id']} {r['symbol']}: {r['status']} (no change)")
             continue

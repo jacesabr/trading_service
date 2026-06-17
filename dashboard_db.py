@@ -23,8 +23,6 @@ from flask import Flask, jsonify, Response, request
 import db
 from rlab import registry
 
-SIZE_USD = float(os.environ.get("SIZE_USD", "100"))
-
 # Public payloads expose RESULTS + identity only. Everything that reveals HOW an
 # edge works or how it was found (method/risk text, signal params/rules, the
 # promotion gate, provenance/hypothesis/research refs, the experiment ledger) is
@@ -57,27 +55,11 @@ def _admin_ok():
             "admin login required", 401,
             {"WWW-Authenticate": 'Basic realm="strategy-lab admin"'})
     return True, None
-# Real cost model for spot paper strategies = measured spread (per trade, from
-# Binance book at signal time) + a transparent round-trip fee. FEE_BPS is the
-# ONLY assumption and it's tunable: default 4 bps round-trip ≈ 2 bps/side, a
-# low-fee-venue / maker-ish taker for liquid crypto. Set FEE_BPS=0 for a pure
-# maker-rebate view. Net = gross − avg_measured_spread − FEE_BPS.
-FEE_BPS = float(os.environ.get("FEE_BPS", "4"))
+
+
 app = Flask(__name__)
 app.json.sort_keys = False        # preserve our most->least profitable ordering
 db.init()
-
-
-def _spread_of(row):
-    d = row.get("detail")
-    if isinstance(d, str):
-        try:
-            d = json.loads(d)
-        except Exception:
-            d = {}
-    if isinstance(d, dict) and isinstance(d.get("spread_bps"), (int, float)):
-        return float(d["spread_bps"])
-    return None
 
 
 def _age_min(ts, now):
@@ -169,7 +151,7 @@ def _build_cards():
                              entry=e["entry"], exit=e.get("exit"),
                              outcome=e.get("outcome") or "open", ret_bps=e["ret_bps"])
                         for e in sorted(real, key=lambda e: e["ts"], reverse=True)[:25]])
-            card["rank_score"] = round(float(ret.mean()), 2) if len(ret) else -0.5
+            card["rank_score"] = card["pnl_total"] if len(ret) else -0.5  # most→least P&L
             card["group"] = "live"
             card["confidence"] = (f"Real {card['broker']} demo fills — broker-executed "
                                   f"(entry, exit & P&L from the venue), not local sim. "
@@ -469,55 +451,6 @@ function rowsTable(c){
  ).join('');
  return `<details><summary>recent trades (${c.recent.length})</summary><table>${head}${body}</table></details>`;
 }
-function kpis(c){
- if(!c.n) return '';
- if(c.unit==='$'){ // meanrev / polymarket
-   return `<div class=kpis>
-     <div class=kpi><small>Resolved</small>${c.n}</div>
-     <div class="kpi ${c.hit>=c.avg_entry?'pos':'neg'}"><small>Hit</small>${pct(c.hit)}</div>
-     <div class=kpi><small>Avg entry</small>${f(c.avg_entry,2)}</div>
-     <div class="kpi ${c.ev>0?'pos':'neg'}"><small>EV/bet</small>${pct(c.ev)}</div></div>`;
- }
- return `<div class=kpis>
-   <div class=kpi><small>Resolved</small>${c.n}</div>
-   <div class=kpi><small>Hit/touch</small>${pct(c.hit)}</div>
-   <div class=kpi><small>Gross bps</small>${c.exp_bps>0?'+':''}${c.exp_bps}</div>
-   <div class="kpi ${c.net_bps>0?'pos':'neg'}"><small>Net bps</small>${c.net_bps>0?'+':''}${c.net_bps}</div></div>`;
-}
-function pnlLine(c){
- if(!c.n) return '';
- const v=c.pnl_total, pos=v>=0;
- const txt = c.unit==='$' ? ((pos?'+$':'−$')+Math.abs(v).toFixed(2))
-                          : ((pos?'+':'')+v+' bps');
- return `<div class=pnl><span class="${pos?'pos':'neg'}">${txt}</span>`
-        +` <small>total P&amp;L · paper${c.unit==='bps'?' · net of costs':''}</small></div>`;
-}
-function confLine(c){ return c.confidence?`<div class=conf>✓ ${c.confidence}</div>`:''; }
-function venuesLine(c){
- if(!c.venues||!Object.keys(c.venues).length) return '';
- const parts=Object.entries(c.venues).map(([v,x])=>
-   `<b style="color:var(--ink)">${v}</b> ${pct(x.hit)} <span class="${x.net_bps>0?'pos':'neg'}">${x.net_bps>0?'+':''}${x.net_bps}bps</span> (${x.n})`);
- return `<div class=status>real venues: ${parts.join(' · ')}</div>`;
-}
-function realLine(c){
- if(!c.real) return '';
- const x=c.real, p=x.net_bps>=0;
- return `<div class=real><span class=lbl>● REAL ${(x.venue||'').toUpperCase()} FILLS</span> — ${x.n} round-trip${x.n==1?'':'s'} ·
-   hit ${pct(x.hit)} · <span class="${p?'pos':'neg'}">${p?'+':''}${x.net_bps} bps/trade</span> ·
-   P&amp;L <span class="${x.pnl>=0?'pos':'neg'}">${x.pnl>=0?'+':''}${x.pnl} bps</span></div>`;
-}
-function costnote(c){
- const sp = c.spread_bps==null ? 'measuring…'
-   : (c.spread_bps+' bps live ('+c.spread_n+' trades)');
- return `<div class=status style="color:var(--dim)">net = gross − spread ${sp} − fee ${c.fee_bps} bps</div>`;
-}
-function baseline(c){
- if(c.rw_base==null) return '';
- const real = c.edge_pp>0;
- return `<div class=status>hit ${pct(c.hit)} vs random-walk ${pct(c.rw_base)}
-   · <span class="${real?'pos':'neg'}">edge ${c.edge_pp>0?'+':''}${c.edge_pp}pp</span>
-   <span style="color:var(--dim)">(target=intrabar touch, stop=close)</span></div>`;
-}
 function pnlStr(c){ const v=c.pnl_total; if(v==null) return '—';
   return c.unit==='$' ? ((v>=0?'+$':'−$')+Math.abs(v).toFixed(2)) : ((v>=0?'+':'')+v+' bps'); }
 function runtimeStr(ts){ if(!ts) return '—'; let s=Math.max(0,Math.floor(Date.now()/1000-ts));
@@ -591,8 +524,11 @@ function statCard(l,v,cls){ return `<div class=stat><div class=l>${l}</div><div 
 async function tickIdeas(){
  let s; try{ s=await(await fetch('/api/ideas')).json(); }catch(e){ return; }
  const st=s.stats||{};
+ const noven=(s.pipeline&&s.pipeline.no_venue)||0;
  document.getElementById('ideas_sub').innerHTML =
-   `${st.open_n||0} ongoing · ${st.n_resolved||0} closed · cap ${s.cap} · <span style="color:var(--dim)">risk-normalised to $${(st.risk_usd||0).toLocaleString()}/trade</span>`;
+   `${st.open_n||0} ongoing · ${st.n_resolved||0} closed · cap ${s.cap}`
+   + (noven?` · <span style="color:var(--dn)">${noven} can't execute (no broker API for their market)</span>`:'')
+   + ` · <span style="color:var(--dim)">risk-normalised to $${(st.risk_usd||0).toLocaleString()}/trade</span>`;
  // header stats — headline is the platform-agnostic, same-risk-per-trade P&L
  const wr = st.win_rate==null?'—':(100*st.win_rate).toFixed(0)+'%';
  const rUsd = st.pnl_risk_usd, totR = st.total_r;

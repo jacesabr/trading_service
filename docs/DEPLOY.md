@@ -23,8 +23,8 @@ SQLite. Crypto data: `python data.py BTCUSDT 5m 1m 2025-06 2026-05`.
 | Service | ID | Role |
 |---|---|---|
 | web `signal-dashboard` | `srv-d8ncr4k8aovs73ab7bb0` | `gunicorn dashboard_db:app` — https://signal-dashboard-3rzj.onrender.com |
-| worker `signal-runner` | `srv-d8ncrf3tqb8s73d1q1rg` | `python runner.py` — crypto 5m loop (frankfurt; Binance blocks US IPs) |
-| cron `signal-daily` | `crn-d8o1svjeo5us738btld0` | `python daily.py` every 2h (`30 */2 * * *`) — Kalshi + equities |
+| worker `signal-runner` | `srv-d8ncrf3tqb8s73d1q1rg` | `python runner.py` — crypto 5m sim loop. **SUSPENDED 2026-06-17** (sim retired; resume only to collect sim data) |
+| cron `signal-daily` | `crn-d8o1svjeo5us738btld0` | `python daily.py` every 2h — places/resolves REAL Alpaca equity brackets + Bybit/Alpaca TradingView ideas |
 | DB | Neon `withered-wind-02493492` / `neondb` | `DATABASE_URL` (pooled, us-west-2) |
 
 `db.py` auto-detects backend: `postgresql://…` → Neon, else local SQLite. Render
@@ -33,8 +33,12 @@ workspace: jae's (owner `tea-d8e1tae8bjmc73am2g10`); API auth via the
 
 ### Env vars per service (names only — set in the Render dashboard)
 - **dashboard**: `DATABASE_URL`, `ADMIN_USER`, `ADMIN_PASSWORD` (gates `/admin`; 503 if unset), `SIZE_USD`, `FEE_BPS`.
-- **worker**: `DATABASE_URL`, `NVIDIA_API_KEY`, `ALPACA_KEY`, `ALPACA_SECRET`, `PYTHONUNBUFFERED`. **Real filled demo trades** (`alpaca_exec.py`): `ALPACA_PLACE_ORDERS=1` arms real Alpaca paper orders — long-crypto round-trips (buy on signal, sell to flatten next bar) recorded in `executions` with real fills + P&L. Allow-list `ALPACA_ORDER_STRATEGIES` (default `clv_fade`), `ALPACA_ORDER_NOTIONAL` (default 12, >$10 crypto floor), `ALPACA_MAX_HOLD_S` (default 1800 force-flatten). Self-closing + deduped, so safe to leave armed; unset → Phase-1 quote-cross sim. Money floor unaffected (paper account; real money still needs `LIVE_BUDGET_ARMED`).
-- **cron**: `DATABASE_URL`, `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY` (PEM contents), `KALSHI_API_BASE`, `ALPACA_KEY`, `ALPACA_SECRET`, `PYTHONUNBUFFERED`. **Real equity bracket orders** (`equity_orders.py`): `ALPACA_EQUITY_ORDERS=1` arms real Alpaca paper bracket (OCO) orders for `ALPACA_EQUITY_STRATEGIES` (default `gaptrav_tight_eq_1h`), `ALPACA_EQUITY_QTY` (default 1). Broker holds the OCO exit (self-closing); placed on the latest live bar, fill at market open. Unset → sim only.
+- **dashboard** also reads `IDEA_RISK_USD` (risk-normalised ideas P&L, default $100) + `IDEA_NOTIONAL`.
+- **worker** (`signal-runner`, **suspended**): `DATABASE_URL`, `ALPACA_KEY/SECRET`, etc. `ALPACA_PLACE_ORDERS` is now **0** — the long-only Alpaca-crypto round-trip (`alpaca_exec.py`) was retired (spread-bled, long-only). Crypto execution moved to Bybit. Resume the worker only to collect sim research data (`LAB_SIM=1`).
+- **cron** (`signal-daily`): `DATABASE_URL`, `ALPACA_KEY/SECRET`, `KALSHI_*`, `PYTHONUNBUFFERED`, plus:
+  - **Bybit demo crypto/gold** (`bybit_orders.py`, the active crypto venue): `BYBIT_DEMO_KEY`, `BYBIT_DEMO_SECRET`, `BYBIT_DEMO_ORDERS=1`. Sizing `BYBIT_SIZE_MODE` (`notional` demo ≈ `BYBIT_NOTIONAL` $100/trade · `risk` live ≈ `RISK_CAD` × `CAD_USD`).
+  - **Alpaca equity brackets** (`equity_orders.py`): `ALPACA_EQUITY_ORDERS=1`, `ALPACA_EQUITY_STRATEGIES=gaptrav_tight_eq_1h,gaptrav_eq_1h,far_targets_eq_1h`, `ALPACA_EQUITY_QTY` (default 1).
+  - **`LAB_SIM`** (default off) — re-enable Kalshi/equity-bar sim collection only if you want sim research data again.
 
 ### Deploying a change
 Auto-deploy is **OFF** (Render pulls the public repo but there's no GitHub

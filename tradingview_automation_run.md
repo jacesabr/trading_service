@@ -10,10 +10,12 @@ Companion to `daily_run.md` (the strategy-lab research run). That one researches
 signals; this one turns the crowd's published ideas into a scored, demo-executed
 track record. **Paper / demo only** — the live path stays gated off.
 
-> **No API keys yet — by design.** The vision step is done manually by Claude
-> Code reading the chart images. The code is already wired for an automated VLM:
-> set `ANTHROPIC_API_KEY` (or `NVIDIA_API_KEY`) and `ideas/scrape.py` will read
-> charts itself, no manual loop. We stay manual until the idea proves it has edge.
+> **Execution is on REAL broker demos now (2026-06-17).** Crypto + gold ideas →
+> **Bybit demo** (broker-held TP/SL, long+short); US-equity ideas → **Alpaca paper**
+> bracket. `binance_sim` is only a dev fallback when Bybit is unarmed. The VISION
+> step is still **manual** (Claude Code reads the charts) — the VLM path is wired
+> (`ANTHROPIC_API_KEY`/`NVIDIA_API_KEY` → `ideas/scrape.py`) but stays manual until
+> the ideas prove edge. Keys live in `.env` (Tavily, Alpaca, Bybit demo).
 
 ---
 
@@ -30,9 +32,10 @@ track record. **Paper / demo only** — the live path stays gated off.
   main page (chart thumbnail, symbol, dir, entry/target/stop, TF, basis, conf,
   status, outcome, author, boosts, link).
 - **`ideas/execute.py`** — P3 demo execution. Routes each `extracted` idea by asset:
-  - **crypto** → `binance_sim`: a limit/stop order at the author's entry, filled +
-    resolved on real Binance 1m klines (no-lookahead, long+short). Honest sim —
-    real prices, not a broker fill.
+  - **crypto + gold** (XAUUSD→PAXGUSDT) → **Bybit demo** (`bybit_orders.py`): a REAL
+    LIMIT entry at the author's price (hedge mode), then broker-held reduce-only
+    TP/SL for that idea's qty — long **and** short, many ideas per symbol. Broker is
+    the source of truth (fills + P&L from Bybit). `binance_sim` only if Bybit unarmed.
   - **US equities** → **Alpaca paper**: a REAL limit-entry **bracket (OCO)** order
     — the broker rests the entry and holds the TP/SL exit itself (genuine fill,
     long+short). Fills at the next market open if placed while closed.
