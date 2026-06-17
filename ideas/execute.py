@@ -204,6 +204,8 @@ def _place_equity_bracket(r, esym, probe=False):
 def _resolve_equity(r):
     """Poll the Alpaca bracket order → fill (pending→open) / OCO exit (→resolved) /
     dead parent (→invalidated). Returns column updates or None (still working)."""
+    if not _alpaca_keys_present():
+        return None                                   # no keys this env → skip, don't crash
     oid = (r.get("ref") or "")[len("order:"):]
     if not oid:
         return None
@@ -282,13 +284,25 @@ def _resolve_bybit(r):
         if st == "Filled":
             qty = o.get("cumExecQty") or o.get("qty")
             ap = float(o.get("avgPrice") or r["entry"])
+            # Anchor TP/SL to the REAL fill using the author's reward:risk, so a
+            # marketable fill away from the author's entry still yields a sane
+            # bracket on the correct sides of the actual fill.
+            oe, ot, os_ = float(r["entry"]), float(r["target"]), float(r["stop"])
+            risk, reward = abs(oe - os_), abs(ot - oe)
+            tgt = ap + d * reward
+            stp = ap - d * risk
             tpid, tpm = bybit_orders.place_reduce_conditional(
-                bsym, d, qty, fmt(float(r["target"]), it["tick"]), "tp")
+                bsym, d, qty, fmt(tgt, it["tick"]), "tp")
             slid, slm = bybit_orders.place_reduce_conditional(
-                bsym, d, qty, fmt(float(r["stop"]), it["tick"]), "sl")
+                bsym, d, qty, fmt(stp, it["tick"]), "sl")
             if tpid and slid:
                 return dict(status="open", exec_entry=round(ap, 6),
-                            exec_ts=int(time.time()), ref=f"bybx:{eid}:{tpid}:{slid}")
+                            exec_ts=int(time.time()), ref=f"bybx:{eid}:{tpid}:{slid}",
+                            target=round(tgt, 6), stop=round(stp, 6))
+            # one leg failed — cancel any that placed so we don't leave a half-bracket
+            for oid_ in (tpid, slid):
+                if oid_:
+                    bybit_orders.cancel(bsym, oid_)
             print(f"  idea {r['id']} {bsym}: exit attach failed tp={tpm} sl={slm}")
             return None
         return None

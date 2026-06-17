@@ -258,16 +258,24 @@ def place_entry(symbol, direction, entry_str, qty_str):
     return (r.get("result") or {}).get("orderId") if r.get("retCode") == 0 else None
 
 
+def current_price(symbol):
+    r = _req("GET", "/v5/market/tickers", {"category": CAT, "symbol": symbol})
+    lst = (r.get("result") or {}).get("list") or []
+    try:
+        return float(lst[0]["lastPrice"])
+    except Exception:
+        return None
+
+
 def place_reduce_conditional(symbol, direction, qty_str, trigger_str, kind):
     """A reduce-only conditional market that closes this idea's qty when the
-    TP/SL trigger prints. kind='tp'|'sl'. Returns (orderId, retMsg)."""
+    TP/SL trigger prints. kind='tp'|'sl' (logging only). triggerDirection is taken
+    from the LIVE price vs the trigger (1=price must rise to it, 2=must fall), so
+    it's always valid regardless of long/short. Returns (orderId, retMsg)."""
     exit_side = "Sell" if direction > 0 else "Buy"
     pos_idx = 1 if direction > 0 else 2
-    # long: TP above (price rises → dir 1), SL below (falls → 2); short: mirrored
-    if direction > 0:
-        td = 1 if kind == "tp" else 2
-    else:
-        td = 2 if kind == "tp" else 1
+    cur = current_price(symbol) or float(trigger_str)
+    td = 1 if float(trigger_str) > cur else 2
     r = _req("POST", "/v5/order/create",
              {"category": CAT, "symbol": symbol, "side": exit_side,
               "orderType": "Market", "qty": qty_str, "positionIdx": pos_idx,
