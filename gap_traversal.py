@@ -35,7 +35,11 @@ ZONES = [(0.0, 23.6), (38.2, 50.0), (61.8, 78.6), (100.0, 127.2),
 
 
 def load(sym, tf):
-    return pd.read_csv(f"{sym}_{tf}.csv")
+    import os
+    p = f"data/{sym}_{tf}.csv"                       # data dumps live in data/
+    if not os.path.exists(p):
+        p = f"{sym}_{tf}.csv"                        # back-compat: old root location
+    return pd.read_csv(p)
 
 
 def rolling_zone_bands(chart, ltf, lookback, va, every):

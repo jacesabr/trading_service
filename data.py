@@ -7,6 +7,7 @@ Usage:
 saves BTCUSDT_1h.csv and BTCUSDT_5m.csv with columns ts,open,high,low,close,volume
 """
 import io
+import os
 import sys
 import zipfile
 import urllib.request
@@ -49,9 +50,10 @@ def fetch(sym: str, tf: str, start_ym: str, end_ym: str) -> pd.DataFrame:
 
 if __name__ == "__main__":
     sym, chart_tf, ltf, start, end = sys.argv[1:6]
+    os.makedirs("data", exist_ok=True)
     for tf in (chart_tf, ltf):
         df = fetch(sym, tf, start, end)
-        path = f"{sym}_{tf}.csv"
+        path = f"data/{sym}_{tf}.csv"               # data dumps live in data/
         df.to_csv(path, index=False)
         print(f"saved {path}: {len(df)} rows, "
               f"{pd.to_datetime(df.ts.iloc[0], unit='ms')} -> "

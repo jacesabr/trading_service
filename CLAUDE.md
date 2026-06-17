@@ -1,7 +1,7 @@
 # CLAUDE.md — Project guide for Claude Code
 
 Autonomous strategy research lab + live paper-tracking system. Read this first,
-then **docs/INFRA.html** for the living architecture, **STRATEGY.md** for the
+then **docs/INFRA.html** for the living architecture, **docs/STRATEGY.md** for the
 error audit, and **daily_run.md** for the daily research procedure.
 
 ## What this project is
@@ -20,7 +20,7 @@ This has bitten us repeatedly. Three guards, never remove them:
    `lag=False` to read the just-closed bar. They must represent the SAME thing.
 2. For Polymarket: the bet candle must open AFTER the signal fires. Predicting
    a candle whose formation overlaps the signal is leakage (we measured a fake
-   63% that was really 50% on the un-formed remainder — see gap_next5m.py).
+   63% that was really 50% on the un-formed remainder — see legacy/gap_next5m.py).
 3. Validation: TRAIN/VALIDATION/TEST split chronologically; TEST read ONCE.
    New rules prove out on TEST and on BOTH symbols, or they don't ship.
 
@@ -68,10 +68,16 @@ how good the in-sample number looks.
     extracted→pending→open→resolved (+ invalidated/no_venue/expired).
 - executor.py / forex_oanda.py / kalshi_paper.place_live — live order layers,
   all gated (LIVE_BUDGET_ARMED). Don't loosen rails.
-- LEGACY one-off backtests (superseded by lab.py/harness, kept for reference):
-  gap_next5m.py, backtest.py, trade_backtest.py, mr_5m.py. Still-imported helpers:
-  gap_traversal.py, indicator_battery.py, zone_breaks.py, confluence_search.py,
-  bias_test.py (do not delete — strategies.py depends on them).
+- LEGACY one-off backtests (superseded by lab.py/harness, kept for reference, now
+  in **legacy/**, run via `python -m legacy.<name>`): legacy/gap_next5m.py,
+  legacy/backtest.py, legacy/trade_backtest.py, legacy/mr_5m.py. Still-imported
+  helpers (stay at root): gap_traversal.py, indicator_battery.py, zone_breaks.py,
+  confluence_search.py, bias_test.py (do not delete — strategies.py depends on them).
+- Repo layout: root holds the live app modules + entry points (runner/daily/
+  dashboard_db/lab/data/tradingview_ideas) + the two runbooks; docs/ (DEPLOY.md,
+  STRATEGY.md, INFRA.html), legacy/, tests/, data/ (gitignored dumps), adapters/,
+  ideas/, rlab/ hold the rest. Flat imports — don't move root modules without
+  refactoring imports + render.yaml/Procfile.
 
 ## Data
 `python3 data.py SYMBOL CHARTTF LTF START_YM END_YM` -> SYMBOL_TF.csv (Binance
