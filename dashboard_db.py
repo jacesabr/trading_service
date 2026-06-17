@@ -264,6 +264,11 @@ def stats():
 # Notional per idea-trade for the $ expectancy (bps → $). At $10k, 1 bps = $1, so
 # expected $/trade ≈ mean ret_bps. Tune with IDEA_NOTIONAL.
 IDEA_NOTIONAL = float(os.environ.get("IDEA_NOTIONAL", "10000"))
+# Fixed $ risked per trade for the platform-agnostic, risk-normalised P&L. Every
+# trade is sized so its entry→stop distance equals this $ (1R). Outcomes then read
+# in R-multiples (stop = −1R, target = +planned-RR), which makes a $3 stock, gold
+# at $4k and BTC at $66k directly comparable. Tune with IDEA_RISK_USD.
+IDEA_RISK_USD = float(os.environ.get("IDEA_RISK_USD", "100"))
 BROKER_NAME = {"alpaca": "Alpaca paper", "binance_sim": "Binance (sim)",
                "oanda": "OANDA", "kraken": "Kraken paper"}
 
@@ -286,6 +291,19 @@ def ideas_feed():
     def _bps_to_usd(b):
         return round(float(b or 0) / 1e4 * IDEA_NOTIONAL, 2)
 
+    def _r_multiple(r):
+        """Realised R-multiple: profit measured in units of the trade's own
+        planned risk (entry→stop). Platform-agnostic — a +1.5R on a $3 stock and
+        on BTC count the same. None if the bracket/return is incomplete."""
+        entry = r.get("exec_entry") or r.get("entry")
+        stop, bps = r.get("stop"), r.get("ret_bps")
+        if not entry or stop is None or bps is None:
+            return None
+        risk = abs(entry - stop)
+        if risk <= 0:
+            return None
+        return (float(bps) / 1e4 * entry) / risk
+
     def _view(r, closed=False):
         v = dict(symbol=r["symbol"], direction=r["direction"],
                  entry=r.get("exec_entry") or r["entry"], target=r["target"],
@@ -298,8 +316,12 @@ def ideas_feed():
             # exit price ≈ the level that was hit (target/stop); flat has none stored
             exit_px = (r["target"] if r["outcome"] == "target"
                        else r["stop"] if r["outcome"] == "stop" else None)
+            rm = _r_multiple(r)
+            rm2 = round(rm, 2) if rm is not None else None
             v.update(outcome=r["outcome"], ret_bps=r.get("ret_bps"), exit=exit_px,
-                     pnl_usd=_bps_to_usd(r.get("ret_bps")), bars_held=r.get("bars_held"))
+                     pnl_usd=_bps_to_usd(r.get("ret_bps")), bars_held=r.get("bars_held"),
+                     r_multiple=rm2,
+                     pnl_risk_usd=(round(rm2 * IDEA_RISK_USD, 2) if rm2 is not None else None))
         return v
 
     ongoing = [_view(r) for r in rows if r.get("status") in ("pending", "open")]
@@ -321,13 +343,24 @@ def ideas_feed():
                 rrs.append(abs(r["target"] - r["entry"]) / risk)
     avg_rr = round(sum(rrs) / len(rrs), 2) if rrs else None
 
+    # RISK-NORMALISED results: every closed trade sized to risk the same $ (1R),
+    # so P&L is comparable across platforms/price scales. total_r in R-units;
+    # pnl_risk_usd is that at $IDEA_RISK_USD risked per trade.
+    r_mults = [p["r_multiple"] for p in previous if p.get("r_multiple") is not None]
+    total_r = round(sum(r_mults), 2) if r_mults else None
+    avg_r = round(sum(r_mults) / len(r_mults), 2) if r_mults else None
+    pnl_risk_usd = round(total_r * IDEA_RISK_USD, 2) if total_r is not None else None
+
     st = lambda s: sum(1 for r in rows if r.get("status") == s)
     return jsonify({
         "last_update": int(time.time()),
         "stats": {"wins": wins, "losses": losses, "n_resolved": n_res,
                   "win_rate": win_rate, "avg_rr": avg_rr, "exp_usd": exp_usd,
                   "total_usd": total_usd, "open_n": len(ongoing),
-                  "notional": IDEA_NOTIONAL},
+                  "notional": IDEA_NOTIONAL,
+                  "total_r": total_r, "avg_r": avg_r,
+                  "pnl_risk_usd": pnl_risk_usd, "risk_usd": IDEA_RISK_USD,
+                  "n_scored": len(r_mults)},
         "ongoing": ongoing, "previous": previous,
         "cap": 50,
         # small pipeline counts (NOT shown as trades — chart-read happens in-flow)
@@ -453,7 +486,7 @@ details[open]#det_ongoing>summary:before,details[open] >summary:before{content:'
 <details id=det_prev><summary>Previous trades <span id=cnt_prev class=cnt></span></summary>
   <div class=tw><table class=ideas id=tbl_prev><thead><tr>
     <th>chart</th><th>symbol</th><th>dir</th><th>entry</th><th>exit</th><th>outcome</th>
-    <th>P&amp;L</th><th>TF</th><th>broker</th><th>executed</th><th>idea</th>
+    <th>R</th><th>P&amp;L <span style="text-transform:none">(@risk)</span></th><th>TF</th><th>broker</th><th>executed</th><th>idea</th>
   </tr></thead><tbody id=body_prev></tbody></table></div>
   <div class=empty id=empty_prev style="display:none">No closed trades yet.</div>
 </details>
@@ -590,16 +623,18 @@ async function tickIdeas(){
  let s; try{ s=await(await fetch('/api/ideas')).json(); }catch(e){ return; }
  const st=s.stats||{};
  document.getElementById('ideas_sub').innerHTML =
-   `${st.open_n||0} ongoing · ${st.n_resolved||0} closed · cap ${s.cap} · <span style="color:var(--dim)">$ at $${(st.notional||0).toLocaleString()} notional/trade</span>`;
- // header stats
+   `${st.open_n||0} ongoing · ${st.n_resolved||0} closed · cap ${s.cap} · <span style="color:var(--dim)">risk-normalised to $${(st.risk_usd||0).toLocaleString()}/trade</span>`;
+ // header stats — headline is the platform-agnostic, same-risk-per-trade P&L
  const wr = st.win_rate==null?'—':(100*st.win_rate).toFixed(0)+'%';
+ const rUsd = st.pnl_risk_usd, totR = st.total_r;
  document.getElementById('ideas_stats').innerHTML =
-   statCard('Wins', st.wins||0, 'pos')
- + statCard('Losses', st.losses||0, 'neg')
+   statCard(`P&amp;L · same risk/trade <span style="color:var(--dim)">($${(st.risk_usd||0).toLocaleString()}=1R)</span>`,
+            usd(rUsd), (rUsd||0)>=0?'pos':'neg')
+ + statCard('Net R', totR==null?'—':(totR>=0?'+':'')+totR, (totR||0)>=0?'pos':'neg')
+ + statCard('Avg R/trade', st.avg_r==null?'—':(st.avg_r>=0?'+':'')+st.avg_r, (st.avg_r||0)>=0?'pos':'neg')
+ + statCard('Won / Lost', `<span class=pos>${st.wins||0}</span> / <span class=neg>${st.losses||0}</span>`)
  + statCard('Win rate', wr)
- + statCard('Avg R:R', st.avg_rr==null?'—':st.avg_rr)
- + statCard('Expected $/trade', usd(st.exp_usd), (st.exp_usd||0)>=0?'pos':'neg')
- + statCard('Total P&amp;L', usd(st.total_usd), (st.total_usd||0)>=0?'pos':'neg')
+ + statCard('Avg R:R <span style="color:var(--dim)">(planned)</span>', st.avg_rr==null?'—':st.avg_rr)
  + statCard('Ongoing', st.open_n||0);
 
  // ongoing
@@ -633,7 +668,8 @@ async function tickIdeas(){
     <td>${ideaDir(r.direction)}</td>
     <td>${px(r.entry)}</td><td>${px(r.exit)}</td>
     <td class="${win?'pos':'neg'}">${r.outcome||''}</td>
-    <td class="${win?'pos':'neg'}">${usd(r.pnl_usd)} <span style="color:var(--dim)">(${r.ret_bps>0?'+':''}${r.ret_bps}bps)</span></td>
+    <td class="${win?'pos':'neg'}">${r.r_multiple==null?'—':(r.r_multiple>=0?'+':'')+r.r_multiple+'R'}</td>
+    <td class="${win?'pos':'neg'}">${usd(r.pnl_risk_usd)} <span style="color:var(--dim)">(${r.ret_bps>0?'+':''}${r.ret_bps}bps)</span></td>
     <td>${r.timeframe||'—'}</td>
     <td>${brokerCell(r.broker)}</td>
     <td>${fmtDT(r.exec_ts)}</td>
