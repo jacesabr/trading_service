@@ -679,12 +679,12 @@ def audit():
             issues.append((r["id"], r.get("symbol"), f"audit error: {str(e)[:80]}"))
     rep = {"checked": checked, "ok": checked - len(issues), "mismatches": issues}
     if issues:
-        print(f"[audit] ⚠ {len(issues)}/{checked} ideas DISAGREE with the broker "
+        print(f"[audit] !! {len(issues)}/{checked} ideas DISAGREE with the broker "
               f"(resolve should fix on the next cycle):")
         for i, sym, why in issues[:20]:
             print(f"    idea {i} {sym}: {why}")
     else:
-        print(f"[audit] ✓ {checked} open/pending ideas match the brokers")
+        print(f"[audit] OK {checked} open/pending ideas match the brokers")
     return rep
 
 
