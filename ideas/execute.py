@@ -230,88 +230,89 @@ def _resolve_equity(r):
     return None                                       # entry limit still resting
 
 
-# ─── Bybit demo crypto venue (REAL server-side perp, broker-held TP/SL) ───────
-# Crypto ideas → a REAL Bybit demo LIMIT entry with the take-profit/stop-loss
-# attached to the order (the broker holds both exits). Long AND short. Bybit demo
-# is one-way netting, so only ONE open Bybit order per symbol at a time — a second
-# idea on the same symbol falls back to binance_sim so brackets never interfere.
-def _bybit_busy(bsym):
-    """One-open-per-symbol guard via the live Bybit account (no schema change):
-    busy if there's an open position OR a resting order on the symbol."""
-    if bybit_orders._position_size(bsym):
-        return True
-    r = bybit_orders._req("GET", "/v5/order/realtime",
-                          {"category": bybit_orders.CAT, "symbol": bsym})
-    return bool((r.get("result") or {}).get("list"))
-
-
+# ─── Bybit demo crypto venue (REAL server-side perp, per-idea broker brackets) ─
+# Every crypto/gold idea → a REAL Bybit demo LIMIT entry (hedge mode, positionIdx
+# 1=long/2=short). On fill we attach reduce-only conditional TP + SL for THIS
+# idea's qty, so many ideas can share a symbol, each with its own broker-held
+# bracket. Long AND short. No binance_sim, no netting collisions. Lifecycle in ref:
+#   byb:<entryId>                      entry resting / filled
+#   bybx:<entryId>:<tpId>:<slId>       position open, broker holds this idea's TP+SL
 def _place_crypto_bybit(r, bsym, probe=False):
-    """REAL Bybit demo limit-entry with attached TP/SL. Returns orderId / 'probe'
-    / None (None → caller falls back to binance_sim)."""
+    """Place a REAL Bybit demo LIMIT entry (exits attach on fill). Returns
+    orderId / 'probe' / None (None → not armed or couldn't place)."""
     if not bybit_orders.armed():
         return None
     it = bybit_orders._instr(bsym)
     if not it:
-        return None                                   # not listed on Bybit (e.g. PAXG)
-    if _bybit_busy(bsym):
-        return None                                   # symbol already has a live trade
-    d = r["direction"]; entry = float(r["entry"]); tp = float(r["target"]); sl = float(r["stop"])
+        return None                                   # not listed on Bybit
+    d = r["direction"]; entry = float(r["entry"])
     qty = bybit_orders._floor_step(bybit_orders.NOTIONAL_USDT / entry, it["qty_step"])
     if qty < it["min_qty"] or qty * entry < it["min_notional"]:
         return None
     fmt = bybit_orders._fmt
     if probe:
         print(f"  idea {r['id']} {bsym}: WOULD place Bybit {'Buy' if d>0 else 'Sell'} "
-              f"limit entry={entry} tp={tp} sl={sl}")
+              f"limit entry={entry} (tp={r['target']} sl={r['stop']} attach on fill)")
         return "probe"
-    body = {"category": bybit_orders.CAT, "symbol": bsym,
-            "side": "Buy" if d > 0 else "Sell", "orderType": "Limit",
-            "qty": fmt(qty, it["qty_step"]), "price": fmt(entry, it["tick"]),
-            "timeInForce": "GTC", "tpslMode": "Full",
-            "takeProfit": fmt(tp, it["tick"]), "stopLoss": fmt(sl, it["tick"]),
-            "tpTriggerBy": "LastPrice", "slTriggerBy": "LastPrice"}
-    resp = bybit_orders._req("POST", "/v5/order/create", body)
-    oid = (resp.get("result") or {}).get("orderId")
-    if resp.get("retCode") != 0 or not oid:
-        print(f"  idea {r['id']} {bsym}: Bybit reject {resp.get('retMsg')}")
-        return None
-    return oid
+    return bybit_orders.place_entry(bsym, d, fmt(entry, it["tick"]),
+                                    fmt(qty, it["qty_step"]))
 
 
 def _resolve_bybit(r):
-    """Poll the Bybit demo order/position → fill (pending→open) / TP-SL close
-    (→resolved) / dead order (→invalidated). Returns idea column updates or None."""
-    oid = (r.get("ref") or "")[len("byb:"):]
+    """Drive the per-idea Bybit lifecycle. entry filled → attach reduce-only TP+SL
+    (pending→open); one exit fills → resolved; dead entry → invalidated."""
+    ref = r.get("ref") or ""
     bsym = route(r["symbol"])
-    if not oid or not bsym:
-        return None
-    o = bybit_orders._order(bsym, oid)
-    status = o.get("orderStatus") if o else None
-    if status in ("New", "PartiallyFilled", "Untriggered"):
-        return None                                   # entry still resting
-    if status in ("Cancelled", "Rejected", "Deactivated"):
-        return dict(status="invalidated")
-    size = bybit_orders._position_size(bsym)
-    if size is None:
-        return None
-    if size > 0:                                      # filled, TP/SL riding
-        if r["status"] != "open":
-            ap = float((o or {}).get("avgPrice") or r["entry"])
-            return dict(status="open", exec_entry=round(ap, 6),
-                        exec_ts=int(time.time()))
-        return None
-    cp = bybit_orders._last_closed(bsym)              # position closed → realized
-    if not cp:
+    if not bsym:
         return None
     d = 1 if r["direction"] > 0 else -1
-    entry = float(cp.get("avgEntryPrice") or r["entry"])
-    exitp = float(cp.get("avgExitPrice") or entry)
-    pnl = float(cp.get("closedPnl") or 0)
-    ret = d * (exitp - entry) / entry * 1e4 if entry else 0.0
-    outcome = ("target" if abs(exitp - float(r["target"])) <= abs(exitp - float(r["stop"]))
-               else "stop")
-    return dict(status="resolved", outcome=outcome, ret_bps=round(ret, 1),
-                exec_entry=round(entry, 6), bars_held=0)
+    it = bybit_orders._instr(bsym) or {"tick": 0.01}
+    fmt = bybit_orders._fmt
+
+    if ref.startswith("byb:"):
+        eid = ref[len("byb:"):]
+        o = bybit_orders.order_obj(bsym, eid)
+        if not o:
+            return None
+        st = o.get("orderStatus")
+        if st in ("New", "PartiallyFilled", "Untriggered"):
+            return None                               # entry still resting
+        if st in ("Cancelled", "Rejected", "Deactivated"):
+            return dict(status="invalidated")
+        if st == "Filled":
+            qty = o.get("cumExecQty") or o.get("qty")
+            ap = float(o.get("avgPrice") or r["entry"])
+            tpid, tpm = bybit_orders.place_reduce_conditional(
+                bsym, d, qty, fmt(float(r["target"]), it["tick"]), "tp")
+            slid, slm = bybit_orders.place_reduce_conditional(
+                bsym, d, qty, fmt(float(r["stop"]), it["tick"]), "sl")
+            if tpid and slid:
+                return dict(status="open", exec_entry=round(ap, 6),
+                            exec_ts=int(time.time()), ref=f"bybx:{eid}:{tpid}:{slid}")
+            print(f"  idea {r['id']} {bsym}: exit attach failed tp={tpm} sl={slm}")
+            return None
+        return None
+
+    if ref.startswith("bybx:"):
+        _, eid, tpid, slid = ref.split(":")
+        entry = float(r.get("exec_entry") or r["entry"])
+        tp = bybit_orders.order_obj(bsym, tpid)
+        sl = bybit_orders.order_obj(bsym, slid)
+        if (tp or {}).get("orderStatus") == "Filled":
+            exitp = float(tp.get("avgPrice") or r["target"])
+            bybit_orders.cancel(bsym, slid)
+            ret = d * (exitp - entry) / entry * 1e4 if entry else 0.0
+            return dict(status="resolved", outcome="target", ret_bps=round(ret, 1),
+                        exec_entry=round(entry, 6), bars_held=0)
+        if (sl or {}).get("orderStatus") == "Filled":
+            exitp = float(sl.get("avgPrice") or r["stop"])
+            bybit_orders.cancel(bsym, tpid)
+            ret = d * (exitp - entry) / entry * 1e4 if entry else 0.0
+            return dict(status="resolved", outcome="stop", ret_bps=round(ret, 1),
+                        exec_entry=round(entry, 6), bars_held=0)
+        return None
+
+    return None
 
 
 # ─── DB helpers (idea exec columns) ───────────────────────────────────────────
@@ -375,10 +376,10 @@ def work_orders(probe=False):
             continue
 
         side = "LONG" if d == 1 else "SHORT"
-        bsym = route(r["symbol"])                      # 1) crypto
+        bsym = route(r["symbol"])                      # 1) crypto / gold (→PAXGUSDT)
         if bsym:
             oid = _place_crypto_bybit(r, bsym, probe=probe)   # 1a) REAL Bybit demo
-            if oid:
+            if oid and oid != "probe":
                 print(f"  idea {r['id']} {bsym}: BYBIT {side} limit entry={r['entry']} "
                       f"tp={r['target']} sl={r['stop']} tf={r['timeframe']} -> pending")
                 if not probe:
@@ -386,7 +387,17 @@ def work_orders(probe=False):
                             ref=f"byb:{oid}")
                 n_work += 1
                 continue
-            print(f"  idea {r['id']} {bsym}: ORDER {side} entry={r['entry']} "    # 1b) sim
+            if oid == "probe":
+                n_work += 1
+                continue
+            if bybit_orders.armed():                   # 1b) armed but unplaceable → no_venue
+                print(f"  idea {r['id']} {bsym}: Bybit could not place "
+                      f"(not listed / reject) -> no_venue")
+                if not probe:
+                    _update(r["id"], status="no_venue")
+                n_noven += 1
+                continue
+            print(f"  idea {r['id']} {bsym}: ORDER {side} entry={r['entry']} "    # 1c) dev sim
                   f"tp={r['target']} sl={r['stop']} tf={r['timeframe']} -> pending (sim)")
             if not probe:
                 _update(r["id"], status="pending", venue=VENUE)
@@ -487,6 +498,43 @@ def _evaluate(r, now_ms):
     return out or None                                # 'open' if just filled, else no change
 
 
+def migrate_to_bybit(probe=False):
+    """Move every open/pending crypto-or-gold idea OFF binance_sim ONTO a REAL
+    Bybit demo order, so nothing tracks on the local kline sim. Equity (Alpaca)
+    ideas are already broker-side and are left alone. Re-places at the idea's
+    original entry as a fresh resting Bybit order (status → pending)."""
+    if not bybit_orders.armed():
+        print("[migrate] Bybit not armed (BYBIT_DEMO_ORDERS=1 + keys) — abort")
+        return 0
+    bybit_orders.ensure_hedge_mode()
+    rows = db._rows("SELECT * FROM ideas WHERE status IN ('pending','open') "
+                    f"AND COALESCE(venue,'') <> {db.PH}", (ALPACA_VENUE,))
+    moved = noven = 0
+    for r in rows:
+        if (r.get("venue") == BYBIT_VENUE) or r["direction"] not in (1, -1) \
+           or not (r["entry"] and r["target"] and r["stop"]):
+            continue
+        bsym = route(r["symbol"])
+        if not bsym:
+            continue                                  # not crypto/gold — leave as is
+        oid = _place_crypto_bybit(r, bsym, probe=probe)
+        if oid and oid != "probe":
+            print(f"  migrate idea {r['id']} {r['symbol']}->{bsym}: binance_sim -> "
+                  f"BYBIT pending (order {oid})")
+            if not probe:
+                _update(r["id"], status="pending", venue=BYBIT_VENUE,
+                        ref=f"byb:{oid}", exec_entry=None, exec_ts=None,
+                        outcome="", ret_bps=None, bars_held=None)
+            moved += 1
+        elif oid != "probe":
+            print(f"  migrate idea {r['id']} {bsym}: not placeable on Bybit -> no_venue")
+            if not probe:
+                _update(r["id"], status="no_venue")
+            noven += 1
+    print(f"[migrate] moved {moved} -> Bybit, {noven} -> no_venue")
+    return moved
+
+
 def resolve_open(probe=False):
     """Fill pending orders + resolve open ones. (Name kept for daily.py.)"""
     rows = db._rows("SELECT * FROM ideas WHERE status IN ('pending','open')")
@@ -533,10 +581,18 @@ def main():
                     help="only place resting orders (extracted -> pending)")
     ap.add_argument("--resolve", action="store_true",
                     help="only fill pending + resolve open")
+    ap.add_argument("--migrate-bybit", action="store_true",
+                    help="move open/pending crypto+gold ideas off binance_sim onto Bybit")
     args = ap.parse_args()
 
     db.init()
     _ensure_cols()
+
+    if args.migrate_bybit:
+        print("[ideas_exec] migrating crypto+gold ideas -> Bybit demo...")
+        migrate_to_bybit(probe=args.probe)
+        if not (args.open or args.resolve):
+            return
 
     do_open = args.open or not args.resolve
     do_res  = args.resolve or not args.open

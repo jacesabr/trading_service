@@ -224,6 +224,58 @@ def resolve_open():
     return n
 
 
+# ─── hedge-mode per-idea primitives (used by the TradingView ideas path) ───────
+# Hedge mode (positionIdx 1=long, 2=short) + reduce-only conditional exits let
+# MANY ideas share a symbol, each with its own broker-held TP/SL — so every crypto
+# idea is broker-confirmed (no binance_sim, no netting collisions).
+def ensure_hedge_mode():
+    """One-time: switch USDT perps to both-side (hedge) mode. Safe to re-call."""
+    return _req("POST", "/v5/position/switch-mode",
+                {"category": CAT, "coin": "USDT", "mode": 3})
+
+
+def order_obj(symbol, oid):
+    """The order by id from realtime (open/untriggered) or history (done)."""
+    for path in ("/v5/order/realtime", "/v5/order/history"):
+        r = _req("GET", path, {"category": CAT, "symbol": symbol, "orderId": oid})
+        lst = (r.get("result") or {}).get("list") or []
+        if lst:
+            return lst[0]
+    return None
+
+
+def cancel(symbol, oid):
+    return _req("POST", "/v5/order/cancel",
+                {"category": CAT, "symbol": symbol, "orderId": oid})
+
+
+def place_entry(symbol, direction, entry_str, qty_str):
+    """LIMIT entry in hedge mode (no TP/SL — exits attach on fill). Returns id/None."""
+    body = {"category": CAT, "symbol": symbol, "side": "Buy" if direction > 0 else "Sell",
+            "orderType": "Limit", "positionIdx": 1 if direction > 0 else 2,
+            "qty": qty_str, "price": entry_str, "timeInForce": "GTC"}
+    r = _req("POST", "/v5/order/create", body)
+    return (r.get("result") or {}).get("orderId") if r.get("retCode") == 0 else None
+
+
+def place_reduce_conditional(symbol, direction, qty_str, trigger_str, kind):
+    """A reduce-only conditional market that closes this idea's qty when the
+    TP/SL trigger prints. kind='tp'|'sl'. Returns (orderId, retMsg)."""
+    exit_side = "Sell" if direction > 0 else "Buy"
+    pos_idx = 1 if direction > 0 else 2
+    # long: TP above (price rises → dir 1), SL below (falls → 2); short: mirrored
+    if direction > 0:
+        td = 1 if kind == "tp" else 2
+    else:
+        td = 2 if kind == "tp" else 1
+    r = _req("POST", "/v5/order/create",
+             {"category": CAT, "symbol": symbol, "side": exit_side,
+              "orderType": "Market", "qty": qty_str, "positionIdx": pos_idx,
+              "reduceOnly": True, "triggerPrice": trigger_str,
+              "triggerDirection": td, "triggerBy": "LastPrice"})
+    return (r.get("result") or {}).get("orderId"), r.get("retMsg")
+
+
 def probe():
     if not all(_keys()):
         return {"ok": False, "why": "no BYBIT_DEMO_KEY/SECRET"}
