@@ -429,23 +429,6 @@ details.scard .ph h2{font:600 14px var(--mono);color:var(--ink)}
 <h1>STRATEGY TRACKER</h1>
 <div class=sub id=sub>loading…</div>
 
-<h2 class=sec id=sec_ideas style="color:var(--live)">💡 TRADINGVIEW IDEAS
-  <small>· community ideas chart-read &amp; demo-executed onto brokers · <span id=ideas_sub></span></small></h2>
-<div id=ideas_stats class=statgrid></div>
-<details id=det_ongoing><summary>Ongoing trades <span id=cnt_ongoing class=cnt></span></summary>
-  <div class=tw><table class=ideas id=tbl_ongoing><thead><tr>
-    <th>chart</th><th>symbol</th><th>dir</th><th>entry</th><th>target</th><th>stop</th>
-    <th>RR</th><th>TF</th><th>broker</th><th>executed</th><th>status</th><th>conf</th><th>idea</th>
-  </tr></thead><tbody id=body_ongoing></tbody></table></div>
-  <div class=empty id=empty_ongoing style="display:none">No ongoing trades.</div>
-</details>
-<details id=det_prev><summary>Previous trades <span id=cnt_prev class=cnt></span></summary>
-  <div class=tw><table class=ideas id=tbl_prev><thead><tr>
-    <th>chart</th><th>symbol</th><th>dir</th><th>entry</th><th>exit</th><th>outcome</th>
-    <th>R</th><th>P&amp;L <span style="text-transform:none">(@risk)</span></th><th>TF</th><th>broker</th><th>executed</th><th>idea</th>
-  </tr></thead><tbody id=body_prev></tbody></table></div>
-  <div class=empty id=empty_prev style="display:none">No closed trades yet.</div>
-</details>
 
 <h2 class=sec id=sec_live><span class="livedot"></span>STRATEGIES — real broker results <small>· click a card to expand · live (real fills) first, then strategies awaiting execution</small></h2>
 <div class=grid id=grid_live></div>
@@ -599,7 +582,6 @@ async function tickIdeas(){
   </tr>`; }).join(''); }
 }
 tick();setInterval(tick,30000);
-tickIdeas();setInterval(tickIdeas,30000);
 </script>"""
 
 
@@ -676,12 +658,6 @@ def docs_page():
     """The living infrastructure document, served from disk so edits show live.
     Maintained by the daily agent — see the maintenance contract inside it."""
     return _serve_doc("INFRA.html", "INFRA.html missing")
-
-
-@app.route("/plan")
-def plan_page():
-    """The TradingView-ideas → demo-execution build plan."""
-    return _serve_doc("IDEAS_PLAN.html", "IDEAS_PLAN.html missing")
 
 
 if __name__ == "__main__":

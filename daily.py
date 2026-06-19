@@ -65,21 +65,9 @@ def main():
     except Exception as e:
         out["crypto_orders"] = {"error": str(e)[:200]}
 
-    # --- TradingView Ideas: resolve open demo brackets (real klines, no LLM) ---
-    # Resolution is pure price data, so it runs unattended here every cycle; the
-    # scrape + chart-read (which need Claude Code) stay in the manual runbook.
-    try:
-        from ideas import execute as ideas_exec
-        ideas_exec._ensure_cols()
-        nw, _, _ = ideas_exec.work_orders()      # extracted -> pending (resting orders)
-        rr = ideas_exec.resolve_open()           # fill pending + resolve open
-        out["ideas"] = {"pending": nw, **rr}
-    except Exception as ex:
-        out["ideas"] = {"error": str(ex)[:200]}
-
     # --- summary line ---
     k = out.get("kalshi", {}); e = out.get("equity", {}); o = out.get("equity_orders", {})
-    co = out.get("crypto_orders", {}); iv = out.get("ideas", {})
+    co = out.get("crypto_orders", {})
     print(f"[daily {started}] kalshi: resolved={k.get('resolved','?')} "
           f"recorded={k.get('recorded','?')}"
           + (f" ERR={k['error']}" if "error" in k else "")
@@ -91,11 +79,7 @@ def main():
           + (f" ERR={o['error']}" if "error" in o else "")
           + f" | crypto_orders: resolved={co.get('resolved','?')} "
           f"placed={co.get('placed','?')}"
-          + (f" ERR={co['error']}" if "error" in co else "")
-          + f" | ideas: pending={iv.get('pending','?')} "
-          f"filled={iv.get('filled','?')} resolved={iv.get('resolved','?')} "
-          f"expired={iv.get('expired','?')}"
-          + (f" ERR={iv['error']}" if "error" in iv else ""))
+          + (f" ERR={co['error']}" if "error" in co else ""))
     return out
 
 

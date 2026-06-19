@@ -72,21 +72,16 @@ how good the in-sample number looks.
 - runner.py — crypto 5m live loop. daily.py — every-2h Kalshi+equity collect/resolve.
 - kalshi_paper.py + adapters/ (kalshi_client, data/kalshi, data/alpaca) — real-API
   paper engines. equity_paper.py — strategy battery on Alpaca equities × timeframes.
-- dashboard_db.py — public results (sorted by P&L) + `/admin` (auth) + `/docs`
-  + `/api/ideas` and the TradingView Ideas board at the top of the page.
-- **tradingview_ideas.py** — THE single root entry-point for the TradingView Ideas
-  pipeline (scrape → chart-read → demo-execute). Subcommands: `scrape`, `vision`,
-  `set`, `run`, `show`, `all`. Run 1–2×/day per **tradingview_automation_run.md**.
-- ideas/ (package) — implementation behind the entry-point:
-  - ideas/scrape.py — P1–P2: scrape via Tavily + store in the `ideas` table +
-    extract levels. Vision is **manual** — Claude Code reads the chart images and
-    writes levels back (`set`); the VLM path is wired for later.
-  - ideas/execute.py — P3 demo execution: route each idea by asset and place a REAL
-    broker demo order at the author's entry, broker holds the TP/SL. Crypto+gold →
-    **Bybit demo** (bybit_orders.py); US equities → **Alpaca paper** bracket
-    (equity_orders.py); `binance_sim` only as a dev fallback. Lifecycle in
-    `ideas.status`: extracted→pending→open→resolved (+ invalidated/no_venue/expired).
-    `--migrate-bybit` moves an existing book onto Bybit.
+- dashboard_db.py — public results (sorted by P&L) + `/admin` (auth) + `/docs`.
+- **crypto_paper.py** — the REAL Bybit demo crypto bracket battery: the zone bracket
+  algos (gaptrav/gaptrav_tight/far_targets/meanrev_confluence) run across ~94 USDT
+  perps × 5m/15m/1h, placing real Bybit demo limit + broker-held TP/SL, 24/7. The
+  crypto twin of `equity_paper.place_live_orders()`. Driven by daily.py every 2h.
+- **The TradingView Ideas pipeline was REMOVED 2026-06-20.** Out-of-sample backtesting
+  on clean, survivorship-free data (180 authors) found NO findable +EV set of authors
+  — public TV calls are sub-coinflip and past performance is anti-predictive (mean
+  reversion). The lab is now algo-only (Bybit crypto + Alpaca equity batteries); if
+  those don't show profit on the next review, the project is to be retired.
 - bybit_orders.py — REAL Bybit demo crypto/gold venue (the active crypto path).
   equity_orders.py — REAL Alpaca paper equity brackets.
 - executor.py / forex_oanda.py / kalshi_paper.place_live — older live order layers,
@@ -97,10 +92,10 @@ how good the in-sample number looks.
   helpers (stay at root): gap_traversal.py, indicator_battery.py, zone_breaks.py,
   confluence_search.py, bias_test.py (do not delete — strategies.py depends on them).
 - Repo layout: root holds the live app modules + entry points (runner/daily/
-  dashboard_db/lab/data/tradingview_ideas) + the two runbooks; docs/ (DEPLOY.md,
-  STRATEGY.md, INFRA.html), legacy/, tests/, data/ (gitignored dumps), adapters/,
-  ideas/, rlab/ hold the rest. Flat imports — don't move root modules without
-  refactoring imports + render.yaml/Procfile.
+  dashboard_db/lab/data/crypto_paper) + daily_run.md; docs/ (DEPLOY.md, STRATEGY.md,
+  INFRA.html), legacy/, tests/, data/ (gitignored dumps), adapters/, rlab/ hold the
+  rest. Flat imports — don't move root modules without refactoring imports +
+  render.yaml/Procfile.
 
 ## Data
 `python3 data.py SYMBOL CHARTTF LTF START_YM END_YM` -> SYMBOL_TF.csv (Binance

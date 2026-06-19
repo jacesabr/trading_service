@@ -30,18 +30,16 @@ services:
       - key: ANTHROPIC_API_KEY
         sync: false
 
-  # The heartbeat that keeps the TradingView-ideas book ALIVE: every 30 min it
-  # places any `extracted` ideas (atomic broker brackets), fills resting orders,
-  # resolves open positions and runs the broker-reconciliation audit — the step
-  # that was missing (daily.py was never scheduled, so the book went stale for
-  # days). Deterministic, no LLM. Bybit demo + Alpaca paper validate from any
-  # region. The chart-read/scrape stays manual (tradingview_automation_run.md).
+  # The algo-trading heartbeat (daily.py): every 2h it places + resolves the REAL
+  # broker bracket batteries — Bybit demo crypto perps (crypto_paper, 24/7) and
+  # Alpaca paper equities (equity_paper, market hours). Deterministic, no LLM.
+  # Bybit demo + Alpaca paper validate from any region.
   - type: cron
-    name: ideas-resolver
+    name: signal-daily
     runtime: python
     plan: starter
     region: frankfurt
-    schedule: "*/30 * * * *"     # every 30 minutes
+    schedule: "30 */2 * * *"     # every 2 hours
     buildCommand: pip install -r requirements.txt
     startCommand: python daily.py
     envVars:
