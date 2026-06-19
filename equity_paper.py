@@ -26,20 +26,28 @@ SYMBOLS = os.environ.get("EQUITY_SYMBOLS",
     # Tech / growth
     "SPY,QQQ,AAPL,MSFT,NVDA,TSLA,AMZN,META,GOOGL,AMD,NFLX,AVGO,PLTR,COIN,"
     "UBER,SHOP,MU,SOFI,RIVN,INTC,ARM,SMCI,DELL,CRM,NOW,"
+    # Semis / hardware
+    "TSM,QCOM,TXN,AMAT,LRCX,MCHP,ON,ANET,MRVL,"
+    # Software / cloud
+    "ORCL,ADBE,CSCO,PANW,SNOW,NET,DDOG,CRWD,"
+    # Internet / consumer-discretionary
+    "DIS,ABNB,BKNG,CMG,LULU,MELI,PYPL,EBAY,"
+    # Comms / telecom
+    "CMCSA,TMUS,T,VZ,"
     # Finance
-    "JPM,BAC,GS,MS,V,MA,BRK.B,C,WFC,"
+    "JPM,BAC,GS,MS,V,MA,BRK.B,C,WFC,AXP,SCHW,BLK,COF,HOOD,"
     # Healthcare
-    "JNJ,UNH,PFE,MRK,ABBV,LLY,"
+    "JNJ,UNH,PFE,MRK,ABBV,LLY,TMO,ABT,DHR,AMGN,GILD,ISRG,"
     # Energy / materials
-    "XOM,CVX,OXY,SLB,FCX,"
+    "XOM,CVX,OXY,SLB,FCX,COP,"
     # Consumer / retail
     "WMT,COST,TGT,NKE,SBUX,MCD,HD,"
     # Industrials / defence
-    "CAT,BA,LMT,RTX,GE,"
+    "CAT,BA,LMT,RTX,GE,HON,UPS,DE,"
     # Crypto-adjacent equities
     "MARA,RIOT,CLSK,MSTR,"
-    # ETFs (sector)
-    "XLF,XLE,XLV,XLK,XLI,ARKK").split(",")
+    # ETFs (sector / index)
+    "XLF,XLE,XLV,XLK,XLI,ARKK,IWM,DIA,SMH,XBI,GLD,XLU").split(",")
 LTF = {"5m": "1m", "15m": "5m", "1h": "15m"}
 ZONE_TFS = ["5m", "15m", "1h"]
 BRACKET_MAXBARS = 24
@@ -222,6 +230,27 @@ def place_live_orders():
     if not equity_orders.armed():
         return 0
     placed = 0
+    # Cache bars + zones per (symbol, tf): the 3 bracket strategies all read the
+    # SAME (sym, tf) data, so without this we'd hit Alpaca 3x per pair. At a large
+    # symbol universe that re-fetch is what trips the data rate limit (and the
+    # except-skip below would then silently drop later symbols). One fetch per pair.
+    bar_cache, band_cache = {}, {}
+
+    def _bars(sym, tf):
+        k = (sym, tf)
+        if k not in bar_cache:
+            try:
+                bar_cache[k] = alpaca.bars(sym, tf, max(SCAN + 220, 260))
+            except Exception:
+                bar_cache[k] = None
+        return bar_cache[k]
+
+    def _bands(sym, tf, df):
+        k = (sym, tf)
+        if k not in band_cache:
+            band_cache[k] = equity_zones(df)
+        return band_cache[k]
+
     for name, base, tf, kind in _specs():
         if kind != "bracket" or not equity_orders.allowed(name):
             continue
@@ -229,13 +258,10 @@ def place_live_orders():
         for sym in SYMBOLS:
             if equity_orders.has_open(name, sym):
                 continue                              # one open bracket per sym
-            try:
-                df = alpaca.bars(sym, tf, max(SCAN + 220, 260))
-            except Exception:
-                continue
+            df = _bars(sym, tf)
             if df is None or len(df) < warm + 2:
                 continue
-            bands = equity_zones(df)
+            bands = _bands(sym, tf, df)
             if not bands:
                 continue
             entry = float(df["close"].iloc[-1])       # latest closed bar

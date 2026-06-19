@@ -9,6 +9,8 @@ real demo fills. Keys: ALPACA_KEY / ALPACA_SECRET (env or .env).
 """
 import json
 import os
+import time
+import urllib.error
 import urllib.request
 import urllib.parse
 from datetime import datetime, timedelta, timezone
@@ -41,9 +43,19 @@ def _hdr():
             "APCA-API-SECRET-KEY": os.environ["ALPACA_SECRET"]}
 
 
-def _get(url):
-    return json.loads(urllib.request.urlopen(
-        urllib.request.Request(url, headers=_hdr()), timeout=30).read())
+def _get(url, _tries=4):
+    """GET with a small backoff on Alpaca's 200-req/min data rate limit (429).
+    Without this a large symbol universe trips the limit and callers that
+    except-skip would silently drop the later symbols, biasing the sample."""
+    for attempt in range(_tries):
+        try:
+            return json.loads(urllib.request.urlopen(
+                urllib.request.Request(url, headers=_hdr()), timeout=30).read())
+        except urllib.error.HTTPError as e:
+            if e.code == 429 and attempt < _tries - 1:
+                time.sleep(1.0 + attempt)            # 1s, 2s, 3s backoff
+                continue
+            raise
 
 
 def bars(symbol, tf, limit=300, feed="iex"):
