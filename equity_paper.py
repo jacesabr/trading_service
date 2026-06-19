@@ -23,8 +23,23 @@ from zone_breaks import compute_profile
 from gap_traversal import ZONES
 
 SYMBOLS = os.environ.get("EQUITY_SYMBOLS",
-    "SPY,QQQ,AAPL,MSFT,NVDA,TSLA,AMZN,META,GOOGL,AMD,NFLX,AVGO,JPM,XOM,"
-    "BAC,DIS,INTC,COIN,PLTR,UBER,SHOP,MU,SOFI,RIVN").split(",")
+    # Tech / growth
+    "SPY,QQQ,AAPL,MSFT,NVDA,TSLA,AMZN,META,GOOGL,AMD,NFLX,AVGO,PLTR,COIN,"
+    "UBER,SHOP,MU,SOFI,RIVN,INTC,ARM,SMCI,DELL,CRM,NOW,"
+    # Finance
+    "JPM,BAC,GS,MS,V,MA,BRK.B,C,WFC,"
+    # Healthcare
+    "JNJ,UNH,PFE,MRK,ABBV,LLY,"
+    # Energy / materials
+    "XOM,CVX,OXY,SLB,FCX,"
+    # Consumer / retail
+    "WMT,COST,TGT,NKE,SBUX,MCD,HD,"
+    # Industrials / defence
+    "CAT,BA,LMT,RTX,GE,"
+    # Crypto-adjacent equities
+    "MARA,RIOT,CLSK,MSTR,"
+    # ETFs (sector)
+    "XLF,XLE,XLV,XLK,XLI,ARKK").split(",")
 LTF = {"5m": "1m", "15m": "5m", "1h": "15m"}
 ZONE_TFS = ["5m", "15m", "1h"]
 BRACKET_MAXBARS = 24
