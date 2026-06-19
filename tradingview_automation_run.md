@@ -285,3 +285,34 @@ python tradingview_ideas.py run --open         only place resting orders
 python tradingview_ideas.py run --resolve      only fill pending + resolve open
 python tradingview_ideas.py all --limit N      scrape then run, in one go
 ```
+
+---
+
+## ⏳ Pending work — carried over from the 2026-06-19 run (rebuild toward 50)
+
+**Book state at hand-off:** 29 live (15 pending + 14 open). 6 cap-blocked
+(`skipped_dup`). Target is 50, so **~21 more** tradeable ideas need extracting from
+the unread scrape backlog.
+
+**62 `needs_vision` ideas remain unread.** This session hit Claude Code's
+per-session image-read ceiling (~24 charts) before clearing them. Charts were
+downloaded + resized to ≤1800px under `data/charts/idea_<id>.png` (gitignored).
+**Next session: resume the chart reads** — `python tradingview_ideas.py vision`
+lists them, or pull `chart_image_url` from Neon (`status='needs_vision'`). Read
+each, then write levels with **direct Neon SQL** (NOT `set` — that hits local
+SQLite unless `DATABASE_URL` is exported), `UPDATE ideas SET direction, timeframe,
+entry, stop, target, status='extracted' WHERE id=<id>`. Then `run`.
+
+Highest-signal unread ones already carry a direction/TF from the text pass (read
+these first): 110 BTCUSD↑1h, 113 BTCUSD↓1h, 92 BTCUSDT↑4h, 103 BTCUSDT↓4h,
+93 BTCUSDT↓2h, 177 WFC↑, 175 INTC↑, 174 RBLX↑, 171 GME↑, 170 AXON↑, 166 AAPL↑,
+168 HOOD↑. The rest (dir=0) need direction read off the chart too.
+
+**Extracted this run (8, placed via `run`):** 129 BTCUSD↓, 95 ETHUSD↑, 124 SOLUSDT↓,
+136 XAUUSD↑ (cap-dup), 125 LDOUSDT↑, 149 TSLA↑ (cap-dup), 165 NVDA↓, 144 XRPUSD↑.
+~24 invalidated (stale entry / no explicit levels / old chart).
+
+**Doc fix needed:** this runbook says an `ideas-resolver` cron runs every 30 min.
+That service is in `render.yaml` but **NOT provisioned** on Render. The deployed
+cron is **`signal-daily`** (`crn-d8o1svjeo5us738btld0`, every 2h, runs `daily.py`)
+— it fills the same role. Either provision `ideas-resolver` or update this note.
