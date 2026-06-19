@@ -55,6 +55,16 @@ def main():
     except Exception as e:
         out["equity_orders"] = {"error": str(e)[:200]}
 
+    # --- REAL Bybit demo crypto bracket battery (24/7, broker-held TP/SL) — always on ---
+    try:
+        import crypto_paper as cx
+        cx.ensure_manifests()
+        cres = cx.resolve_open()
+        cplaced = cx.place_live_orders()
+        out["crypto_orders"] = {"resolved": cres, "placed": cplaced}
+    except Exception as e:
+        out["crypto_orders"] = {"error": str(e)[:200]}
+
     # --- TradingView Ideas: resolve open demo brackets (real klines, no LLM) ---
     # Resolution is pure price data, so it runs unattended here every cycle; the
     # scrape + chart-read (which need Claude Code) stay in the manual runbook.
@@ -69,7 +79,7 @@ def main():
 
     # --- summary line ---
     k = out.get("kalshi", {}); e = out.get("equity", {}); o = out.get("equity_orders", {})
-    iv = out.get("ideas", {})
+    co = out.get("crypto_orders", {}); iv = out.get("ideas", {})
     print(f"[daily {started}] kalshi: resolved={k.get('resolved','?')} "
           f"recorded={k.get('recorded','?')}"
           + (f" ERR={k['error']}" if "error" in k else "")
@@ -79,6 +89,9 @@ def main():
           + f" | eq_orders: resolved={o.get('resolved','?')} "
           f"placed={o.get('placed','?')}"
           + (f" ERR={o['error']}" if "error" in o else "")
+          + f" | crypto_orders: resolved={co.get('resolved','?')} "
+          f"placed={co.get('placed','?')}"
+          + (f" ERR={co['error']}" if "error" in co else "")
           + f" | ideas: pending={iv.get('pending','?')} "
           f"filled={iv.get('filled','?')} resolved={iv.get('resolved','?')} "
           f"expired={iv.get('expired','?')}"

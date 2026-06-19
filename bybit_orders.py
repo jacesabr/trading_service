@@ -23,6 +23,7 @@ import os
 import time
 import urllib.error
 import urllib.request
+from decimal import Decimal
 
 import db
 
@@ -130,11 +131,18 @@ def _floor_step(v, step):
 
 
 def _dec(step):
-    s = repr(step)
-    return len(s.split(".")[1]) if "." in s else 0
+    """Decimal places for a tick/qty step. Uses Decimal so a small step in
+    scientific-notation float form (repr(1e-05)=='1e-05', no '.') still yields the
+    right precision — the old repr().split('.') returned 0 there and formatted
+    sub-1e-4-tick prices to '0' ('Price invalid' rejects on e.g. DOGE/SAND/GRT)."""
+    return max(-Decimal(str(step)).normalize().as_tuple().exponent, 0)
 
 
 def _fmt(v, step):
+    """Snap to the step grid, then format to its precision. Snapping keeps prices on
+    the tick grid (Bybit rejects off-grid prices) and qty on the lot grid."""
+    if step and step > 0:
+        v = round(v / step) * step
     return f"{v:.{_dec(step)}f}"
 
 
