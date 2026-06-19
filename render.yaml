@@ -1,7 +1,6 @@
 # Render blueprint — push this repo to GitHub, then Render -> New -> Blueprint.
-# Provisions: 1 free web service (dashboard) + 1 paid worker (runner).
-# Set DATABASE_URL (Neon pooled string), NVIDIA_API_KEY, ANTHROPIC_API_KEY
-# in the env of BOTH services after first deploy.
+# Provisions: 1 free web (dashboard) + 1 paid worker (runner) + 1 cron (resolver).
+# Set DATABASE_URL (Neon pooled), the broker keys, ANTHROPIC/NVIDIA in each service.
 services:
   - type: web
     name: signal-dashboard
@@ -29,4 +28,32 @@ services:
       - key: NVIDIA_API_KEY
         sync: false
       - key: ANTHROPIC_API_KEY
+        sync: false
+
+  # The heartbeat that keeps the TradingView-ideas book ALIVE: every 30 min it
+  # places any `extracted` ideas (atomic broker brackets), fills resting orders,
+  # resolves open positions and runs the broker-reconciliation audit — the step
+  # that was missing (daily.py was never scheduled, so the book went stale for
+  # days). Deterministic, no LLM. Bybit demo + Alpaca paper validate from any
+  # region. The chart-read/scrape stays manual (tradingview_automation_run.md).
+  - type: cron
+    name: ideas-resolver
+    runtime: python
+    plan: starter
+    region: frankfurt
+    schedule: "*/30 * * * *"     # every 30 minutes
+    buildCommand: pip install -r requirements.txt
+    startCommand: python daily.py
+    envVars:
+      - key: DATABASE_URL
+        sync: false
+      - key: BYBIT_DEMO_ORDERS
+        value: "1"
+      - key: BYBIT_DEMO_KEY
+        sync: false
+      - key: BYBIT_DEMO_SECRET
+        sync: false
+      - key: ALPACA_KEY
+        sync: false
+      - key: ALPACA_SECRET
         sync: false

@@ -59,9 +59,21 @@ VENUE   = "binance_sim"
 # hold (a 1d idea holds days, a 5m idea minutes-to-hours).
 TF_MIN  = {"1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30,
            "1h": 60, "2h": 120, "3h": 180, "4h": 240, "6h": 360, "8h": 480,
-           "12h": 720, "1d": 1440, "3d": 4320, "1w": 10080}
+           "12h": 720, "1d": 1440, "2d": 2880, "3d": 4320, "1w": 10080,
+           "2w": 20160, "1M": 43200}
 MAX_HOLD_BARS = 24            # e.g. a 1h idea holds ≤24h, a 1d idea ≤24 days
 MAX_WAIT_BARS = 12            # un-filled resting order expires after this many TF bars
+
+# Reward:risk floor. A bracket whose target is barely beyond the entry vs the stop
+# (e.g. SOL #16: target 67.93 / entry 68 / stop 73 → RR 0.01) can only lose; it is
+# not a trade. Below this floor the placement gate rejects the idea outright.
+MIN_RR = 0.8
+
+# Per-symbol concurrency cap: at most ONE long AND ONE short open/pending per
+# NORMALISED instrument (XAUUSD and GOLD are the same PAXG; BTCUSD and BTCUSDT are
+# the same BTC). Stops the book filling with 8 gold longs / 5 SPCX longs, and is
+# what keeps Bybit's per-symbol conditional-order load under its cap.
+MAX_PER_SYMBOL_SIDE = 1
 
 # Minimum stop distance (as a fraction of price) BELOW which a stop is just noise
 # for that timeframe — a weekly swing can't survive a 1% stop. Used only for the
@@ -79,22 +91,32 @@ MIN_STOP_FRAC = {"1m": 0.002, "3m": 0.003, "5m": 0.003, "15m": 0.005,
 MAX_DRIFT_R = 1.0
 
 
-def _entry_validity(d, entry, target, stop, px, tf, absolute_stop):
-    """Pre-placement gate: is this idea still tradeable at the LIVE price `px`?
+def _entry_validity(d, entry, target, stop, px, tf):
+    """Pre-placement gate: is this idea still tradeable, with a sane stop, right now?
 
-    The cardinal bug this prevents: we place a LIMIT bracket at the author's entry.
-    If the entry is on the wrong side of `px`, that limit is *marketable* — it fills
-    NOW at the market, not at the drawn level — and a stop sized to the intended
-    entry lands on top of the real fill → an instant, meaningless stop-out.
+    Catches the cardinal bug: we place a LIMIT bracket at the author's entry. If the
+    entry is on the wrong side of live `px`, that limit is *marketable* — it fills NOW
+    at the market, not the drawn level — and a stop sized to the intended entry lands
+    on top of the real fill → an instant, meaningless stop-out.
 
-    Returns (ok: bool, reason: str). `absolute_stop` True = the venue submits the
-    author's stop price verbatim (Alpaca); False = the venue re-anchors to the fill
-    (Bybit), so the timeframe min-stop floor doesn't apply."""
+    The timeframe stop-distance floor (`MIN_STOP_FRAC`) is enforced on BOTH venues now:
+    a weekly idea with a 1% stop is noise regardless of who holds the order. (Bybit no
+    longer re-anchors the bracket, so it gets the same discipline as Alpaca.) Returns
+    (ok, reason)."""
+    floor = MIN_STOP_FRAC.get(tf, 0.010)
     if px is None or px <= 0:
-        return True, "no live price — placing unchecked"
+        room = abs(entry - stop) / entry if entry else 0.0
+        if room < floor:
+            return False, (f"stop {stop} only {room*100:.2f}% from entry "
+                           f"(< {floor*100:.1f}% floor for {tf}) — noise stop")
+        return True, "no live price — geometry + stop-room ok"
     # marketable: long entry at/above market, or short entry at/below market.
     marketable = (entry - px) * d >= 0
     if not marketable:
+        room = abs(entry - stop) / entry
+        if room < floor:
+            return False, (f"stop {stop} only {room*100:.2f}% from entry "
+                           f"(< {floor*100:.1f}% floor for {tf}) — noise stop")
         return True, f"resting limit @ {entry} (waits for the level; live {px})"
     # It WILL fill ~now at px, not at `entry`. Validate the setup against px.
     if (target - px) * d <= 0:
@@ -109,12 +131,10 @@ def _entry_validity(d, entry, target, stop, px, tf, absolute_stop):
         if drift_r > MAX_DRIFT_R:
             return False, (f"fill ~{px} is {drift_r:.2f}R off the {entry} entry "
                            f"(> {MAX_DRIFT_R:.1f}R cutoff) — stale level, skip")
-    if absolute_stop:
-        room = abs(px - stop) / px
-        floor = MIN_STOP_FRAC.get(tf, 0.010)
-        if room < floor:
-            return False, (f"stop {stop} only {room*100:.2f}% from live {px} "
-                           f"(< {floor*100:.1f}% floor for {tf}) — would be noise-stopped")
+    room = abs(px - stop) / px
+    if room < floor:
+        return False, (f"stop {stop} only {room*100:.2f}% from live {px} "
+                       f"(< {floor*100:.1f}% floor for {tf}) — would be noise-stopped")
     return True, f"marketable fill ~{px}, drift ok, stop room ok"
 
 
@@ -166,31 +186,75 @@ _BASE_ALIASES = {"XBT": "BTC", "SOLANA": "SOL", "BITCOIN": "BTC",
                  "XAU": "PAXG", "GOLD": "PAXG"}
 
 
+# Liquid crypto bases with a Bybit USDT-perp / Binance USDT pair. This is the fast
+# static allow-list; route() also falls back to a LIVE Bybit instrument lookup so any
+# listed coin trades even if it's not enumerated here (keeps no_venue rare).
+_SUPPORTED_BASES = {
+    "BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "ADA", "AVAX", "LINK", "MATIC",
+    "LTC", "DOT", "TRX", "ORDI", "NEAR", "APT", "ARB", "OP", "SUI", "INJ", "TIA",
+    "SEI", "PEPE", "WIF", "SHIB", "ATOM", "FIL", "RUNE", "AAVE", "UNI", "ETC",
+    "BCH", "PAXG",
+    # expanded majors / popular community-idea coins
+    "TON", "KAS", "RNDR", "RENDER", "FET", "TAO", "FTM", "ALGO", "HBAR", "ICP",
+    "IMX", "STX", "GALA", "SAND", "MANA", "AXS", "CHZ", "EOS", "XLM", "VET",
+    "XTZ", "EGLD", "FLOW", "GRT", "LDO", "MKR", "SNX", "CRV", "COMP", "DYDX",
+    "JTO", "JUP", "PYTH", "STRK", "ENA", "W", "ONDO", "BONK", "FLOKI", "1000PEPE",
+    "1000BONK", "1000FLOKI", "1000SHIB", "POL", "NOT", "ZK", "BLUR", "GMX",
+    "WLD", "ARKM", "ENS", "MEME", "SUSHI", "1INCH", "CAKE", "GMT", "APE",
+    "DASH", "ZEC", "XMR", "NEO", "IOTA", "QNT", "KSM", "MINA", "ROSE", "CFX",
+}
+_BAD_BASES = set()    # bases a live Bybit lookup has confirmed are NOT listed
+
+
 def route(symbol):
-    """TradingView symbol → a Binance USDT spot pair, or None if unsupported.
+    """TradingView symbol → a Bybit/Binance USDT pair, or None if unsupported.
 
     Handles BTCUSDT / BTCUSD / BTC / ETHUSD … by extracting the base asset and
-    pinning the quote to USDT (the liquid Binance pair). Non-crypto / unknown
-    bases return None → recorded `no_venue`."""
+    pinning the quote to USDT. The static allow-list answers instantly. For anything
+    else we ask Bybit whether <BASE>USDT is a live linear perp (cached) — but ONLY
+    when the original symbol carried an explicit crypto quote (USDT/USDC/USD/PERP), so
+    a bare equity ticker (AAPL, SPCX, MERC) is NEVER claimed by Bybit and falls
+    through to the equity router. Unknown bases return None → recorded `no_venue`."""
+    if not symbol:
+        return None
+    raw = symbol.upper().strip()
+    if ":" in raw:
+        raw = raw.split(":", 1)[1]
+    base = _norm_symbol(symbol)
+    if not base:
+        return None
+    if base in _SUPPORTED_BASES:                       # known crypto — instant
+        return base + "USDT"
+    if base in _BAD_BASES:
+        return None
+    # dynamic fallback only for symbols that look like crypto pairs, never bare tickers
+    if not any(raw.endswith(q) for q in ("USDT", "USDC", "PERP", "USD")):
+        return None
+    try:
+        if bybit_orders._instr(base + "USDT"):
+            _SUPPORTED_BASES.add(base)
+            return base + "USDT"
+    except Exception:
+        pass
+    _BAD_BASES.add(base)
+    return None
+
+
+def _norm_symbol(symbol):
+    """Canonical instrument key shared by every alias of the same market, used by
+    both the router and the per-symbol cap: XAUUSD/GOLD→PAXG, BTCUSD/BTCUSDT→BTC,
+    AAPL→AAPL. Strips an EXCHANGE: prefix and a USDT/USD/USDC/PERP quote, then applies
+    the base aliases. Equity tickers pass through unchanged."""
     if not symbol:
         return None
     s = symbol.upper().strip()
-    # strip a leading EXCHANGE: prefix if present (e.g. BINANCE:BTCUSDT)
     if ":" in s:
         s = s.split(":", 1)[1]
-    for q in ("USDT", "USD", "USDC", "PERP"):
-        if s.endswith(q):
+    for q in ("USDT", "USDC", "PERP", "USD"):
+        if s.endswith(q) and len(s) > len(q):
             s = s[: -len(q)]
             break
-    s = _BASE_ALIASES.get(s, s)
-    # supported liquid crypto bases with a Binance USDT pair. Extend as needed.
-    supported = {"BTC", "ETH", "SOL", "XRP", "DOGE", "BNB", "ADA", "AVAX",
-                 "LINK", "MATIC", "LTC", "DOT", "TRX", "ORDI", "NEAR", "APT",
-                 "ARB", "OP", "SUI", "INJ", "TIA", "SEI", "PEPE", "WIF", "SHIB",
-                 "ATOM", "FIL", "RUNE", "AAVE", "UNI", "ETC", "BCH", "PAXG"}
-    if s in supported:
-        return s + "USDT"
-    return None
+    return _BASE_ALIASES.get(s, s)
 
 
 # ─── Alpaca equity venue (REAL paper bracket OCO, broker-held) ────────────────
@@ -311,29 +375,45 @@ def _resolve_equity(r):
 #   byb:<entryId>                      entry resting / filled
 #   bybx:<entryId>:<tpId>:<slId>       position open, broker holds this idea's TP+SL
 def _place_crypto_bybit(r, bsym, probe=False):
-    """Place a REAL Bybit demo LIMIT entry (exits attach on fill). Returns
-    orderId / 'probe' / None (None → not armed or couldn't place)."""
+    """Place a REAL Bybit demo LIMIT entry with TP+SL ATTACHED at creation (hedge
+    mode, positionIdx 1/2). The position is protected the instant it fills — never a
+    naked window, and no separate conditional orders to pile against Bybit's
+    10-per-symbol cap. Returns orderId / 'probe' / None."""
     if not bybit_orders.armed():
         return None
     it = bybit_orders._instr(bsym)
     if not it:
         return None                                   # not listed on Bybit
-    d = r["direction"]; entry = float(r["entry"])
-    qty, _risk = bybit_orders.position_qty(entry, float(r["stop"]), it)  # demo: ~$100
+    d = r["direction"]
+    entry, tgt, stp = float(r["entry"]), float(r["target"]), float(r["stop"])
+    qty, _risk = bybit_orders.position_qty(entry, stp, it)               # demo: ~$100
     if qty <= 0:
         return None
     fmt = bybit_orders._fmt
     if probe:
         print(f"  idea {r['id']} {bsym}: WOULD place Bybit {'Buy' if d>0 else 'Sell'} "
-              f"limit entry={entry} (tp={r['target']} sl={r['stop']} attach on fill)")
+              f"limit entry={entry} tp={tgt} sl={stp} (bracket attached at creation)")
         return "probe"
-    return bybit_orders.place_entry(bsym, d, fmt(entry, it["tick"]),
-                                    fmt(qty, it["qty_step"]))
+    oid, msg = bybit_orders.place_entry_bracket(
+        bsym, d, fmt(entry, it["tick"]), fmt(qty, it["qty_step"]),
+        fmt(tgt, it["tick"]), fmt(stp, it["tick"]))
+    if not oid:
+        print(f"  idea {r['id']} {bsym}: Bybit entry reject — {msg}")
+    return oid
 
 
 def _resolve_bybit(r):
-    """Drive the per-idea Bybit lifecycle. entry filled → attach reduce-only TP+SL
-    (pending→open); one exit fills → resolved; dead entry → invalidated."""
+    """Drive the Bybit lifecycle.
+
+    NEW model (bracket attached at entry): `byb:<oid>` entry → on fill mark `open`
+    and re-anchor the position TP/SL to the real fill via trading-stop (protection
+    never drops); `bybx:<oid>` open position → `resolved` when its size hits 0
+    (realized exit/P&L from closed-pnl). The re-anchor amend also retro-fits a stop
+    onto any pre-existing naked position (it's a position-level set, so it does NOT
+    hit the 10-conditional cap that blocked the old reduce-only attach).
+
+    LEGACY model (still honoured for pre-existing positions): `bybx:<eid>:<tpid>:<slid>`
+    tracked two separate reduce-only conditional orders — resolved when one fills."""
     ref = r.get("ref") or ""
     bsym = route(r["symbol"])
     if not bsym:
@@ -353,49 +433,55 @@ def _resolve_bybit(r):
         if st in ("Cancelled", "Rejected", "Deactivated"):
             return dict(status="invalidated")
         if st == "Filled":
-            qty = o.get("cumExecQty") or o.get("qty")
             ap = float(o.get("avgPrice") or r["entry"])
-            # Anchor TP/SL to the REAL fill using the author's reward:risk, so a
-            # marketable fill away from the author's entry still yields a sane
-            # bracket on the correct sides of the actual fill.
+            # Re-anchor TP/SL to the REAL fill (author reward:risk preserved) and set
+            # it on the position — fixes drift AND retro-protects an entry that filled
+            # before its bracket was attached.
             oe, ot, os_ = float(r["entry"]), float(r["target"]), float(r["stop"])
-            risk, reward = abs(oe - os_), abs(ot - oe)
-            tgt = ap + d * reward
-            stp = ap - d * risk
-            tpid, tpm = bybit_orders.place_reduce_conditional(
-                bsym, d, qty, fmt(tgt, it["tick"]), "tp")
-            slid, slm = bybit_orders.place_reduce_conditional(
-                bsym, d, qty, fmt(stp, it["tick"]), "sl")
-            if tpid and slid:
-                return dict(status="open", exec_entry=round(ap, 6),
-                            exec_ts=int(time.time()), ref=f"bybx:{eid}:{tpid}:{slid}",
-                            target=round(tgt, 6), stop=round(stp, 6))
-            # one leg failed — cancel any that placed so we don't leave a half-bracket
-            for oid_ in (tpid, slid):
-                if oid_:
-                    bybit_orders.cancel(bsym, oid_)
-            print(f"  idea {r['id']} {bsym}: exit attach failed tp={tpm} sl={slm}")
-            return None
+            reward, risk = abs(ot - oe), abs(oe - os_)
+            tgt, stp = ap + d * reward, ap - d * risk
+            res = bybit_orders.amend_trading_stop(
+                bsym, d, fmt(tgt, it["tick"]), fmt(stp, it["tick"]))
+            if (res or {}).get("retCode") not in (0, None):
+                print(f"  idea {r['id']} {bsym}: trading-stop amend → {res.get('retMsg')}")
+            return dict(status="open", exec_entry=round(ap, 6), exec_ts=int(time.time()),
+                        ref=f"bybx:{eid}", target=round(tgt, 6), stop=round(stp, 6))
         return None
 
     if ref.startswith("bybx:"):
-        _, eid, tpid, slid = ref.split(":")
+        parts = ref.split(":")
         entry = float(r.get("exec_entry") or r["entry"])
-        tp = bybit_orders.order_obj(bsym, tpid)
-        sl = bybit_orders.order_obj(bsym, slid)
-        if (tp or {}).get("orderStatus") == "Filled":
-            exitp = float(tp.get("avgPrice") or r["target"])
-            bybit_orders.cancel(bsym, slid)
-            ret = d * (exitp - entry) / entry * 1e4 if entry else 0.0
-            return dict(status="resolved", outcome="target" if ret >= 0 else "stop",
-                        ret_bps=round(ret, 1), exec_entry=round(entry, 6), bars_held=0)
-        if (sl or {}).get("orderStatus") == "Filled":
-            exitp = float(sl.get("avgPrice") or r["stop"])
-            bybit_orders.cancel(bsym, tpid)
-            ret = d * (exitp - entry) / entry * 1e4 if entry else 0.0
-            return dict(status="resolved", outcome="target" if ret >= 0 else "stop",
-                        ret_bps=round(ret, 1), exec_entry=round(entry, 6), bars_held=0)
-        return None
+        # legacy: two reduce-only conditional orders
+        if len(parts) == 4:
+            _, eid, tpid, slid = parts
+            tp = bybit_orders.order_obj(bsym, tpid)
+            sl = bybit_orders.order_obj(bsym, slid)
+            if (tp or {}).get("orderStatus") == "Filled":
+                exitp = float(tp.get("avgPrice") or r["target"])
+                bybit_orders.cancel(bsym, slid)
+                ret = d * (exitp - entry) / entry * 1e4 if entry else 0.0
+                return dict(status="resolved", outcome="target" if ret >= 0 else "stop",
+                            ret_bps=round(ret, 1), exec_entry=round(entry, 6), bars_held=0)
+            if (sl or {}).get("orderStatus") == "Filled":
+                exitp = float(sl.get("avgPrice") or r["stop"])
+                bybit_orders.cancel(bsym, tpid)
+                ret = d * (exitp - entry) / entry * 1e4 if entry else 0.0
+                return dict(status="resolved", outcome="target" if ret >= 0 else "stop",
+                            ret_bps=round(ret, 1), exec_entry=round(entry, 6), bars_held=0)
+            return None
+        # new: position carries the bracket; resolved when it closes
+        pos = bybit_orders.position_by_idx(bsym, d)
+        if pos and float(pos.get("size") or 0) > 0:
+            return None                               # still open
+        cp = bybit_orders.closed_pnl_recent(bsym)
+        if not cp:
+            return None
+        exitp = float(cp.get("avgExitPrice") or entry)
+        entry = float(cp.get("avgEntryPrice") or entry)
+        pnl = float(cp.get("closedPnl") or 0)
+        ret = d * (exitp - entry) / entry * 1e4 if entry else 0.0
+        return dict(status="resolved", outcome="target" if pnl >= 0 else "stop",
+                    ret_bps=round(ret, 1), exec_entry=round(entry, 6), bars_held=0)
 
     return None
 
@@ -434,13 +520,28 @@ def _update(idea_id, **cols):
     c.commit(); cur.close(); c.close()
 
 
+# ─── Per-symbol cap (1 long + 1 short per NORMALISED instrument) ───────────────
+def _open_sides():
+    """Set of (normalised_symbol, direction) already live (open/pending). Used to
+    enforce MAX_PER_SYMBOL_SIDE so the book can't fill with 8 gold longs / 5 SPCX
+    longs — and so Bybit's per-symbol conditional-order load stays bounded."""
+    taken = {}
+    for r in db._rows("SELECT symbol, direction FROM ideas "
+                      "WHERE status IN ('open','pending')"):
+        key = (_norm_symbol(r["symbol"]), r["direction"])
+        taken[key] = taken.get(key, 0) + 1
+    return taken
+
+
 # ─── Work: place a resting limit/stop order at the entry ──────────────────────
 def work_orders(probe=False):
-    """extracted → pending (a resting order at the author's entry). Rejects only
-    on routing (no_venue), an incomplete or geometrically-bad bracket — NOT on
-    where the live price is (that's what the resting order waits for)."""
+    """extracted → pending (a resting order at the author's entry). Rejects on:
+    routing (no_venue), an incomplete/geometrically-bad bracket, a sub-MIN_RR
+    reward:risk (garbage bracket), or the per-symbol 1-long-1-short cap. Price
+    location does NOT reject a sound idea — that's what the resting order waits for."""
     rows = db._rows("SELECT * FROM ideas WHERE status='extracted'")
-    n_work = n_noven = n_bad = 0
+    taken = _open_sides()
+    n_work = n_noven = n_bad = n_dup = 0
     for r in rows:
         d = r["direction"]
         if d not in (1, -1) or not (r["entry"] and r["target"] and r["stop"]):
@@ -459,17 +560,35 @@ def work_orders(probe=False):
                 _update(r["id"], status="invalidated")
             n_bad += 1
             continue
+        # reward:risk floor — a target barely beyond entry vs the stop can only lose.
+        rr = abs(r["target"] - r["entry"]) / abs(r["entry"] - r["stop"])
+        if rr < MIN_RR:
+            print(f"  idea {r['id']} {r['symbol']}: RR {rr:.2f} < {MIN_RR} floor "
+                  f"(entry={r['entry']} tp={r['target']} sl={r['stop']}) -> invalidated")
+            if not probe:
+                _update(r["id"], status="invalidated")
+            n_bad += 1
+            continue
+        # per-symbol cap: at most one long + one short per normalised instrument.
+        nkey = (_norm_symbol(r["symbol"]), d)
+        if taken.get(nkey, 0) >= MAX_PER_SYMBOL_SIDE:
+            print(f"  idea {r['id']} {r['symbol']}: already have a "
+                  f"{'LONG' if d==1 else 'SHORT'} {nkey[0]} open/pending "
+                  f"(cap {MAX_PER_SYMBOL_SIDE}/side) -> skipped_dup")
+            if not probe:
+                _update(r["id"], status="skipped_dup")
+            n_dup += 1
+            continue
 
         side = "LONG" if d == 1 else "SHORT"
         tf = r["timeframe"]
         bsym = route(r["symbol"])                      # 1) crypto / gold (→PAXGUSDT)
         if bsym:
-            # pre-placement gate: Bybit re-anchors TP/SL to the fill, so the abs-stop
-            # floor doesn't apply, but a setup whose level is already breached should
-            # still be invalidated rather than entered at a marketable price.
+            # pre-placement gate (both venues now): reject a setup already played out
+            # at the live price, a >1R-stale marketable fill, or a stop tighter than
+            # the timeframe floor (noise stop).
             ok, why = _entry_validity(d, float(r["entry"]), float(r["target"]),
-                                      float(r["stop"]), live_mid(bsym), tf,
-                                      absolute_stop=False)
+                                      float(r["stop"]), live_mid(bsym), tf)
             if not ok:
                 print(f"  idea {r['id']} {bsym}: {why} -> invalidated")
                 if not probe:
@@ -483,9 +602,11 @@ def work_orders(probe=False):
                 if not probe:
                     _update(r["id"], status="pending", venue=BYBIT_VENUE,
                             ref=f"byb:{oid}")
+                taken[nkey] = taken.get(nkey, 0) + 1
                 n_work += 1
                 continue
             if oid == "probe":
+                taken[nkey] = taken.get(nkey, 0) + 1
                 n_work += 1
                 continue
             # Couldn't place on a real broker API → NO paper-trading fallback.
@@ -505,8 +626,7 @@ def work_orders(probe=False):
             # already-breached setups AND stops too tight for the timeframe (this is
             # the guard that kills the NOW −210bps placement before it happens).
             ok, why = _entry_validity(d, float(r["entry"]), float(r["target"]),
-                                      float(r["stop"]), _alpaca_price(esym), tf,
-                                      absolute_stop=True)
+                                      float(r["stop"]), _alpaca_price(esym), tf)
             if not ok:
                 print(f"  idea {r['id']} {esym}: {why} -> invalidated")
                 if not probe:
@@ -520,6 +640,7 @@ def work_orders(probe=False):
                 if not probe:
                     _update(r["id"], status="pending", venue=ALPACA_VENUE,
                             ref=f"order:{oid}")
+                taken[nkey] = taken.get(nkey, 0) + 1
                 n_work += 1
             else:
                 if not probe:
@@ -531,7 +652,10 @@ def work_orders(probe=False):
         if not probe:
             _update(r["id"], status="no_venue")
         n_noven += 1
-    return n_work, n_noven, n_bad
+    if n_dup:
+        print(f"  [cap] {n_dup} idea(s) skipped — per-symbol {MAX_PER_SYMBOL_SIDE}-long-"
+              f"{MAX_PER_SYMBOL_SIDE}-short cap")
+    return n_work, n_noven, n_bad + n_dup
 
 
 # ─── Fill + resolve: walk klines from when we first saw the idea ──────────────

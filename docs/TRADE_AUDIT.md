@@ -114,3 +114,53 @@ re-anchored). i.e. it removes exactly the broken trades and keeps the honest one
 
 See `tradingview_automation_run.md` → "Stop & target discipline" for the manual
 chart-read rules that prevent mis-set levels upstream of this guard.
+
+---
+
+## 2026-06-19 — full-book audit: naked positions, netting, the "reversing wins" myth
+
+**Trigger:** the resolved record looked worse than chance (4 win / 13 loss, ~−1000
+bps net) and "reversing would win 70%". A full reconciliation against the brokers +
+an independent 1-minute-kline replay of every resolved crypto/gold trade settled it.
+
+**No resolution inversion.** Replaying real klines, the recorded outcome matched the
+real price path in every clean-fill case (STOP↔stop, TARGET↔target). The code does
+not score backwards. The loss rate had three real causes, in order of size:
+
+1. **Long-biased book into a down window.** Of the resolved trades, **9 of 9 longs
+   lost**; shorts went ~4/4. The equity book was ~30 long : 1 short — the scraper
+   pulls bullish retail ideas, and Jun 16–17 fell. "Reverse → 70%" is just "the
+   sample was one-directional," not a sign bug. (Per-symbol cap helps; it doesn't
+   balance direction — that's inherent to the idea source.)
+2. **Marketable-fill distortion.** #6, #16, #50 recorded as "stop" never reached the
+   author's stop *from the author's entry* — they filled marketable (e.g. SOL filled
+   71.93 vs author 68) and the broker stopped the re-anchored bracket. We were
+   entering breakout ideas as immediate market orders instead of waiting for the level.
+3. **Garbage brackets.** #16 SOL: target 67.93 vs entry 68.00 → RR ≈ 0.01. Can only
+   lose. Now rejected by `MIN_RR` (0.8 floor).
+
+**Naked positions — "placed without SL/TP" CONFIRMED.** Three Bybit gold positions
+(#76, #78, #88) were FILLED on the broker but had **no stop and no target**. Root
+cause was a two-step flow: a bare `byb:` LIMIT entry, with TP/SL only attached on a
+LATER resolve cycle (`bybx:`). With the resolve cron missing for two days, those
+filled naked. Worse, the re-attach **failed**: Bybit caps conditional/stop orders at
+**10 per symbol**, and ~8 gold ideas piled onto PAXGUSDT had exhausted it — so the
+stops literally could not be placed.
+
+**The fixes (shipped):**
+- **Atomic bracket** — Bybit entries now place with TP+SL ATTACHED at creation
+  (`place_entry_bracket`, tpslMode=Full, hedge positionIdx). Born protected; no naked
+  window. Re-anchor on fill uses position-level trading-stop (not a new conditional),
+  so it never hits the 10-cap.
+- **Per-symbol cap** — ≤ 1 long + 1 short per normalised instrument. Cosmetic *and*
+  the thing that keeps each symbol's conditional load bounded.
+- **Stop floor on BOTH venues** — the `MIN_STOP_FRAC` timeframe floor now applies to
+  Bybit too (it no longer "re-anchors away" a too-tight stop). A weekly idea with a
+  1% stop is noise regardless of venue.
+- **`MIN_RR` floor (0.8)** and the per-symbol cap added to the placement gate.
+
+**Cull (2026-06-19):** the live book was audited chart-by-chart (one agent per trade
+read the author's chart vs our recorded SL/TP). 25 of 51 open/pending trades failed
+today's rules (direction-wrong / no drawn setup / played-out / sub-floor stop / cap
+duplicate) and were closed on the broker + marked `removed`; 26 survived. Net
+direction skew remained long — a book-construction issue, not a placement bug.

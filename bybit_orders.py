@@ -282,12 +282,64 @@ def cancel(symbol, oid):
 
 
 def place_entry(symbol, direction, entry_str, qty_str):
-    """LIMIT entry in hedge mode (no TP/SL — exits attach on fill). Returns id/None."""
+    """LIMIT entry in hedge mode (no TP/SL — exits attach on fill). Returns id/None.
+    LEGACY: the bare-entry path that left a naked window until resolve attached the
+    reduce-only conditionals. Kept for the migration of pre-existing bybx: positions;
+    new placements use place_entry_bracket (TP/SL attached at creation, never naked)."""
     body = {"category": CAT, "symbol": symbol, "side": "Buy" if direction > 0 else "Sell",
             "orderType": "Limit", "positionIdx": 1 if direction > 0 else 2,
             "qty": qty_str, "price": entry_str, "timeInForce": "GTC"}
     r = _req("POST", "/v5/order/create", body)
     return (r.get("result") or {}).get("orderId") if r.get("retCode") == 0 else None
+
+
+def place_entry_bracket(symbol, direction, entry_str, qty_str, tp_str, sl_str):
+    """Hedge-mode LIMIT entry with the take-profit + stop-loss ATTACHED at creation
+    (tpslMode=Full, positionIdx 1=long/2=short). The instant the entry fills the
+    position is already protected — there is NO naked window, and (unlike the legacy
+    reduce-only-conditional flow) it does not pile separate stop orders against the
+    10-conditional-per-symbol Bybit cap. Returns (orderId, retMsg)."""
+    body = {"category": CAT, "symbol": symbol, "side": "Buy" if direction > 0 else "Sell",
+            "orderType": "Limit", "positionIdx": 1 if direction > 0 else 2,
+            "qty": qty_str, "price": entry_str, "timeInForce": "GTC",
+            "tpslMode": "Full", "takeProfit": tp_str, "stopLoss": sl_str,
+            "tpTriggerBy": "LastPrice", "slTriggerBy": "LastPrice"}
+    r = _req("POST", "/v5/order/create", body)
+    oid = (r.get("result") or {}).get("orderId")
+    return (oid if r.get("retCode") == 0 else None), r.get("retMsg")
+
+
+def position_by_idx(symbol, direction):
+    """The hedge-mode position record for this idea's side (positionIdx 1 long / 2
+    short), or None. Used to detect when a bracketed position has closed."""
+    idx = 1 if direction > 0 else 2
+    r = _req("GET", "/v5/position/list", {"category": CAT, "symbol": symbol})
+    for p in (r.get("result") or {}).get("list") or []:
+        try:
+            if int(p.get("positionIdx", -1)) == idx:
+                return p
+        except Exception:
+            continue
+    return None
+
+
+def amend_trading_stop(symbol, direction, tp_str, sl_str):
+    """Re-anchor a live position's TP/SL (e.g. after a marketable fill drifted from
+    the author entry) without ever removing protection. Full mode, per positionIdx."""
+    body = {"category": CAT, "symbol": symbol, "positionIdx": 1 if direction > 0 else 2,
+            "tpslMode": "Full", "takeProfit": tp_str, "stopLoss": sl_str,
+            "tpTriggerBy": "LastPrice", "slTriggerBy": "LastPrice"}
+    return _req("POST", "/v5/position/trading-stop", body)
+
+
+def closed_pnl_recent(symbol):
+    """Most-recent realized close for a symbol (avgEntryPrice/avgExitPrice/closedPnl/
+    side/qty), or None. With the 1-long + 1-short-per-symbol cap this unambiguously
+    identifies the position that just closed when resolve sees its size hit 0."""
+    r = _req("GET", "/v5/position/closed-pnl",
+             {"category": CAT, "symbol": symbol, "limit": "50"})
+    lst = (r.get("result") or {}).get("list") or []
+    return lst[0] if lst else None
 
 
 def current_price(symbol):

@@ -237,14 +237,31 @@ pull. Use a high scrape limit (e.g. `scrape --limit 50`).
 ## Rules / floors (never cross)
 - **≤ 50 open trades** — global cap on concurrent LIVE demo positions
   (`status='open'`), checked before any scrape (compute governor).
-- **Timeframe-agnostic** — trades of ANY timeframe are taken; the TF only sets the
-  max-hold downstream (a 1d idea holds days, a 5m idea minutes-to-hours). It never
-  drops an idea. (Reinstate a cap by setting `MAX_TF_MIN` in `ideas/scrape.py`.)
+- **≤ 1 long + 1 short per symbol** (`MAX_PER_SYMBOL_SIDE`, by NORMALISED instrument:
+  XAUUSD≡GOLD≡PAXG, BTCUSD≡BTCUSDT≡BTC). The placement gate skips a third trade on a
+  symbol/side → `skipped_dup`. Stops the book filling with 8 gold longs / 5 SPCX
+  longs, and keeps each Bybit symbol under its **10-conditional-order cap** (the bug
+  that left gold positions naked — see docs/TRADE_AUDIT.md).
+- **Bracket attached at entry, never naked** — Bybit entries place with TP+SL
+  ATTACHED (`place_entry_bracket`, tpslMode=Full, hedge positionIdx); the position is
+  protected the instant it fills. No more bare-entry → attach-on-next-cycle window.
+- **SL/TP must follow the §2.5 rules, enforced in code:** the placement gate
+  (`_entry_validity`) rejects, on BOTH venues, a stop tighter than the timeframe floor
+  (`MIN_STOP_FRAC`), an already-played-out level, a >1 R marketable drift, and
+  (`MIN_RR`) a reward:risk below **0.8** (a target barely past entry can only lose).
+- **Timeframe-agnostic** — trades of ANY timeframe are taken (1m … 1M); the TF only
+  sets the max-hold + the stop-distance floor. It never drops an idea.
 - **Demo / paper only** — real money still needs `LIVE_BUDGET_ARMED=1` (off).
 - **AI/agent-generated levels are tagged** `basis=generated` — never presented as
   the author's call. Chart-read levels are `basis=chart`; in-text are `basis=text`.
 - **One independent trade per idea** — no consensus/voting across ideas; the
-  broker OCO (when P3 lands) owns the exit.
+  broker OCO owns the exit.
+
+> **The book runs itself now.** A Render **cron (`ideas-resolver`, every 30 min)**
+> runs `daily.py` → places `extracted` ideas, fills resting orders, resolves open
+> positions, and audits vs the brokers. Before this existed the pipeline only moved
+> when a human ran it, so it sat stale for days ("no trades executing"). The scrape +
+> chart-read still runs here, manually, 1–2×/day.
 
 ## Toward automation (when it shows promise)
 The manual chart-read **is the validation gate** for whether an automated VLM is

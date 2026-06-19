@@ -286,11 +286,28 @@ def ideas_feed():
                   "n_scored": len(r_mults)},
         "ongoing": ongoing, "previous": previous,
         "cap": 50,
+        # win-rate split by direction — surfaces a long/short book bias at a glance
+        "by_dir": {
+            "long":  _dir_stats(previous, 1),
+            "short": _dir_stats(previous, -1),
+        },
         # small pipeline counts (NOT shown as trades — chart-read happens in-flow)
         "pipeline": {"needs_vision": st("needs_vision"), "extracted": st("extracted"),
                      "no_venue": st("no_venue"), "invalidated": st("invalidated"),
-                     "expired": st("expired")},
+                     "expired": st("expired"), "skipped_dup": st("skipped_dup")},
     })
+
+
+def _dir_stats(previous, d):
+    """Resolved win-rate + P&L for one side (1 long / -1 short) — exposes whether the
+    book is winning/losing disproportionately on one direction (the long-bias finding)."""
+    rows = [p for p in previous if p.get("direction") == d]
+    n = len(rows)
+    if not n:
+        return {"n": 0, "wins": 0, "win_rate": None, "total_usd": 0.0}
+    wins = sum(1 for p in rows if (p.get("ret_bps") or 0) > 0)
+    return {"n": n, "wins": wins, "win_rate": round(wins / n, 4),
+            "total_usd": round(sum(p.get("pnl_usd") or 0 for p in rows), 2)}
 
 
 @app.route("/api/admin/stats")
