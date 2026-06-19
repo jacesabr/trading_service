@@ -15,21 +15,6 @@ services:
       - key: SIZE_USD
         value: "100"
 
-  - type: worker
-    name: signal-runner
-    runtime: python
-    plan: starter                # workers require a paid plan (~$7/mo)
-    region: frankfurt            # MUST be non-US — Binance blocks US IPs (HTTP 451)
-    buildCommand: pip install -r requirements.txt
-    startCommand: python runner.py
-    envVars:
-      - key: DATABASE_URL
-        sync: false
-      - key: NVIDIA_API_KEY
-        sync: false
-      - key: ANTHROPIC_API_KEY
-        sync: false
-
   # The algo-trading heartbeat (daily.py): every 2h it places + resolves the REAL
   # broker bracket batteries — Bybit demo crypto perps (crypto_paper, 24/7) and
   # Alpaca paper equities (equity_paper, market hours). Deterministic, no LLM.

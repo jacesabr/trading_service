@@ -1,26 +1,15 @@
-"""daily.py — the scheduled lab heartbeat (deterministic; runs every ~8h).
+"""daily.py — the scheduled algo-trading heartbeat (deterministic, every 2h).
 
-What runs every cycle, against REAL APIs, paper-only:
-  1. Resolve matured Kalshi crypto predictions from Kalshi's finalized results.
-  2. Collect new model predictions on near-money Kalshi markets (live spot+vol).
-  3. Print a heartbeat the scheduler/log captures.
-
-This is the dependable, no-LLM core of the daily run. The Claude Code research
-agent (AGENT.md) layers research/validation/upkeep on top via the lab CLI; this
-script is what guarantees positions get recorded and settled on schedule even if
-the agent does nothing.
+Places + resolves the REAL broker bracket batteries, paper-only:
+  - Bybit demo crypto perps (crypto_paper, 24/7)
+  - Alpaca paper equities (equity_paper, market hours)
+Broker fills only — no self-resolved sim. Prints a heartbeat the cron log captures.
 
 Run: python daily.py   (uses DATABASE_URL if set, else local tracker.db)
 """
-import os
 import time
 
 import db
-
-# Local SIMULATION collection (Kalshi paper bets + equity-bar paper trades) is OFF
-# by default — we track REAL broker fills only (Alpaca/Bybit). Set LAB_SIM=1 to
-# re-enable the self-resolved sim data collection.
-SIM = os.environ.get("LAB_SIM") == "1"
 
 
 def main():
@@ -28,53 +17,27 @@ def main():
     started = time.strftime("%Y-%m-%d %H:%M:%SZ", time.gmtime())
     out = {"started": started}
 
-    if SIM:
-        # --- Kalshi crypto model (real API, paper SIM) ---
-        try:
-            import kalshi_paper as kp
-            out["kalshi"] = {"resolved": kp.resolve_open(), "recorded": kp.collect()}
-        except Exception as e:
-            out["kalshi"] = {"error": str(e)[:200]}
-
-        # --- Equities on Alpaca (real bars, paper SIM) ---
-        try:
-            import equity_paper as eq
-            eq.ensure_manifests()
-            out["equity"] = {"resolved": eq.resolve_open(), "recorded": eq.collect()}
-        except Exception as e:
-            out["equity"] = {"error": str(e)[:200]}
-
-    # --- REAL Alpaca equity bracket orders (broker-managed OCO) — always on ---
+    # --- REAL Alpaca equity bracket orders (broker-managed OCO) ---
     try:
         import equity_orders
         import equity_paper as eq
         eq.ensure_manifests()
-        ores = equity_orders.resolve_open()
-        oplaced = eq.place_live_orders()
-        out["equity_orders"] = {"resolved": ores, "placed": oplaced}
+        out["equity_orders"] = {"resolved": equity_orders.resolve_open(),
+                                "placed": eq.place_live_orders()}
     except Exception as e:
         out["equity_orders"] = {"error": str(e)[:200]}
 
-    # --- REAL Bybit demo crypto bracket battery (24/7, broker-held TP/SL) — always on ---
+    # --- REAL Bybit demo crypto bracket battery (24/7, broker-held TP/SL) ---
     try:
         import crypto_paper as cx
         cx.ensure_manifests()
-        cres = cx.resolve_open()
-        cplaced = cx.place_live_orders()
-        out["crypto_orders"] = {"resolved": cres, "placed": cplaced}
+        out["crypto_orders"] = {"resolved": cx.resolve_open(),
+                                "placed": cx.place_live_orders()}
     except Exception as e:
         out["crypto_orders"] = {"error": str(e)[:200]}
 
-    # --- summary line ---
-    k = out.get("kalshi", {}); e = out.get("equity", {}); o = out.get("equity_orders", {})
-    co = out.get("crypto_orders", {})
-    print(f"[daily {started}] kalshi: resolved={k.get('resolved','?')} "
-          f"recorded={k.get('recorded','?')}"
-          + (f" ERR={k['error']}" if "error" in k else "")
-          + f" | equity: resolved={e.get('resolved','?')} "
-          f"recorded={e.get('recorded','?')}"
-          + (f" ERR={e['error']}" if "error" in e else "")
-          + f" | eq_orders: resolved={o.get('resolved','?')} "
+    o = out.get("equity_orders", {}); co = out.get("crypto_orders", {})
+    print(f"[daily {started}] eq_orders: resolved={o.get('resolved','?')} "
           f"placed={o.get('placed','?')}"
           + (f" ERR={o['error']}" if "error" in o else "")
           + f" | crypto_orders: resolved={co.get('resolved','?')} "
