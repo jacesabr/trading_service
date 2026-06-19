@@ -183,131 +183,9 @@ def stats():
     return jsonify(full)
 
 
-# Notional per idea-trade for the $ expectancy (bps → $). At $10k, 1 bps = $1, so
-# expected $/trade ≈ mean ret_bps. Tune with IDEA_NOTIONAL.
-IDEA_NOTIONAL = float(os.environ.get("IDEA_NOTIONAL", "10000"))
-# Fixed $ risked per trade for the platform-agnostic, risk-normalised P&L. Every
-# trade is sized so its entry→stop distance equals this $ (1R). Outcomes then read
-# in R-multiples (stop = −1R, target = +planned-RR), which makes a $3 stock, gold
-# at $4k and BTC at $66k directly comparable. Tune with IDEA_RISK_USD.
-IDEA_RISK_USD = float(os.environ.get("IDEA_RISK_USD", "100"))
 BROKER_NAME = {"alpaca": "Alpaca paper", "binance_sim": "Binance (sim)",
                "oanda": "OANDA", "kraken": "Kraken paper",
                "bybit_demo": "Bybit demo", "binance_futures": "Binance futures demo"}
-
-
-@app.route("/api/ideas")
-def ideas_feed():
-    """PUBLIC — TradingView idea TRADES only (chart-read happens in-flow during the
-    run, so non-trades like `needs_vision` never surface here). Returns header
-    stats + two lists: `ongoing` (pending/open orders) and `previous` (resolved).
-    Tolerant of a missing `ideas` table (returns empty)."""
-    cols = ("id, ts, url, author, symbol, boosts, chart_image_url, direction, "
-            "entry, stop, target, timeframe, basis, confidence, outcome, ret_bps, "
-            "status")
-    try:
-        rows = db._rows(f"SELECT {cols}, venue, exec_entry, exec_ts, bars_held "
-                        "FROM ideas ORDER BY ts DESC LIMIT 1000")
-    except Exception:
-        rows = []
-
-    def _bps_to_usd(b):
-        return round(float(b or 0) / 1e4 * IDEA_NOTIONAL, 2)
-
-    def _r_multiple(r):
-        """Realised R-multiple: profit measured in units of the trade's own
-        planned risk (entry→stop). Platform-agnostic — a +1.5R on a $3 stock and
-        on BTC count the same. None if the bracket/return is incomplete."""
-        entry = r.get("exec_entry") or r.get("entry")
-        stop, bps = r.get("stop"), r.get("ret_bps")
-        if not entry or stop is None or bps is None:
-            return None
-        risk = abs(entry - stop)
-        if risk <= 0:
-            return None
-        return (float(bps) / 1e4 * entry) / risk
-
-    def _view(r, closed=False):
-        v = dict(symbol=r["symbol"], direction=r["direction"],
-                 entry=r.get("exec_entry") or r["entry"], target=r["target"],
-                 stop=r["stop"], timeframe=r["timeframe"], basis=r["basis"],
-                 confidence=r["confidence"], url=r["url"],
-                 chart_image_url=r["chart_image_url"], author=r["author"],
-                 venue=r.get("venue"), broker=BROKER_NAME.get(r.get("venue"), r.get("venue") or "—"),
-                 exec_ts=r.get("exec_ts"), placed_ts=r["ts"], status=r["status"])
-        if closed:
-            # exit price ≈ the level that was hit (target/stop); flat has none stored
-            exit_px = (r["target"] if r["outcome"] == "target"
-                       else r["stop"] if r["outcome"] == "stop" else None)
-            rm = _r_multiple(r)
-            rm2 = round(rm, 2) if rm is not None else None
-            v.update(outcome=r["outcome"], ret_bps=r.get("ret_bps"), exit=exit_px,
-                     pnl_usd=_bps_to_usd(r.get("ret_bps")), bars_held=r.get("bars_held"),
-                     r_multiple=rm2,
-                     pnl_risk_usd=(round(rm2 * IDEA_RISK_USD, 2) if rm2 is not None else None))
-        return v
-
-    ongoing = [_view(r) for r in rows if r.get("status") in ("pending", "open")]
-    previous = [_view(r, closed=True) for r in rows if r.get("status") == "resolved"]
-
-    # header stats over resolved trades
-    n_res = len(previous)
-    wins = sum(1 for p in previous if (p.get("ret_bps") or 0) > 0)
-    losses = n_res - wins
-    win_rate = round(wins / n_res, 4) if n_res else None
-    total_usd = round(sum(p.get("pnl_usd") or 0 for p in previous), 2)
-    exp_usd = round(total_usd / n_res, 2) if n_res else None
-    # planned reward:risk over all trade rows that have a full bracket
-    rrs = []
-    for r in rows:
-        if r.get("status") in ("pending", "open", "resolved") and r["entry"] and r["target"] and r["stop"]:
-            risk = abs(r["entry"] - r["stop"])
-            if risk > 0:
-                rrs.append(abs(r["target"] - r["entry"]) / risk)
-    avg_rr = round(sum(rrs) / len(rrs), 2) if rrs else None
-
-    # RISK-NORMALISED results: every closed trade sized to risk the same $ (1R),
-    # so P&L is comparable across platforms/price scales. total_r in R-units;
-    # pnl_risk_usd is that at $IDEA_RISK_USD risked per trade.
-    r_mults = [p["r_multiple"] for p in previous if p.get("r_multiple") is not None]
-    total_r = round(sum(r_mults), 2) if r_mults else None
-    avg_r = round(sum(r_mults) / len(r_mults), 2) if r_mults else None
-    pnl_risk_usd = round(total_r * IDEA_RISK_USD, 2) if total_r is not None else None
-
-    st = lambda s: sum(1 for r in rows if r.get("status") == s)
-    return jsonify({
-        "last_update": int(time.time()),
-        "stats": {"wins": wins, "losses": losses, "n_resolved": n_res,
-                  "win_rate": win_rate, "avg_rr": avg_rr, "exp_usd": exp_usd,
-                  "total_usd": total_usd, "open_n": len(ongoing),
-                  "notional": IDEA_NOTIONAL,
-                  "total_r": total_r, "avg_r": avg_r,
-                  "pnl_risk_usd": pnl_risk_usd, "risk_usd": IDEA_RISK_USD,
-                  "n_scored": len(r_mults)},
-        "ongoing": ongoing, "previous": previous,
-        "cap": 50,
-        # win-rate split by direction — surfaces a long/short book bias at a glance
-        "by_dir": {
-            "long":  _dir_stats(previous, 1),
-            "short": _dir_stats(previous, -1),
-        },
-        # small pipeline counts (NOT shown as trades — chart-read happens in-flow)
-        "pipeline": {"needs_vision": st("needs_vision"), "extracted": st("extracted"),
-                     "no_venue": st("no_venue"), "invalidated": st("invalidated"),
-                     "expired": st("expired"), "skipped_dup": st("skipped_dup")},
-    })
-
-
-def _dir_stats(previous, d):
-    """Resolved win-rate + P&L for one side (1 long / -1 short) — exposes whether the
-    book is winning/losing disproportionately on one direction (the long-bias finding)."""
-    rows = [p for p in previous if p.get("direction") == d]
-    n = len(rows)
-    if not n:
-        return {"n": 0, "wins": 0, "win_rate": None, "total_usd": 0.0}
-    wins = sum(1 for p in rows if (p.get("ret_bps") or 0) > 0)
-    return {"n": n, "wins": wins, "win_rate": round(wins / n, 4),
-            "total_usd": round(sum(p.get("pnl_usd") or 0 for p in rows), 2)}
 
 
 @app.route("/api/admin/stats")
@@ -369,15 +247,6 @@ th:first-child,td:first-child{text-align:left}
 .panel.livecard{border-color:var(--up);box-shadow:0 0 0 1px rgba(63,182,139,.25)}
 .real{font:600 12px var(--mono);background:#0f2018;border-left:2px solid var(--up);padding:7px 10px;border-radius:0 6px 6px 0;margin:8px 0;color:var(--ink)}
 .real .lbl{color:var(--up);letter-spacing:.04em}
-/* ideas board */
-#ideas_wrap{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:6px 10px;overflow-x:auto;margin-bottom:8px}
-table.ideas{width:100%;border-collapse:collapse;font:11px var(--mono);min-width:980px}
-table.ideas th{position:sticky;top:0;background:var(--panel);text-align:right;padding:6px 8px;color:var(--dim);border-bottom:1px solid var(--line);font-weight:600;text-transform:uppercase;letter-spacing:.03em;font-size:10px}
-table.ideas td{text-align:right;padding:5px 8px;border-bottom:1px solid var(--line);font-variant-numeric:tabular-nums}
-table.ideas th:nth-child(2),table.ideas td:nth-child(2),
-table.ideas th:last-child,table.ideas td:last-child,
-table.ideas th:nth-child(12),table.ideas td:nth-child(12){text-align:left}
-table.ideas tr:hover td{background:#0f1828}
 .idot{width:6px;height:6px;border-radius:50%;display:inline-block;margin-right:4px}
 .b-long{color:var(--up);font-weight:600}.b-short{color:var(--dn);font-weight:600}.b-none{color:var(--dim)}
 .st{font-size:9px;padding:1px 6px;border-radius:3px;font-weight:600;white-space:nowrap}
@@ -394,12 +263,11 @@ table.ideas tr:hover td{background:#0f1828}
 .thumb{width:42px;height:26px;object-fit:cover;border-radius:3px;border:1px solid var(--line);vertical-align:middle}
 .bas{font-size:9px;color:var(--dim)}.bas-chart{color:var(--up)}.bas-generated{color:var(--live)}
 a.idea-link{color:var(--live);text-decoration:none}a.idea-link:hover{text-decoration:underline}
-/* ideas stats strip + dropdowns */
+/* stat cards + dropdowns */
 .statgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:4px 0 14px}
 .stat{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
 .stat .v{font:600 22px var(--mono);font-variant-numeric:tabular-nums}
 .stat .l{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px}
-#sec_ideas+#ideas_stats{margin-top:8px}
 details#det_ongoing,details#det_prev{background:var(--panel);border:1px solid var(--line);border-radius:10px;margin-bottom:10px;padding:4px 0}
 details#det_ongoing>summary,details#det_prev>summary{font:600 13px var(--mono);text-transform:uppercase;letter-spacing:.04em;color:var(--ink);cursor:pointer;padding:10px 14px;list-style:none}
 details>summary::-webkit-details-marker{display:none}
@@ -521,66 +389,6 @@ function rr(r){ if(!r.entry||!r.target||!r.stop) return '—';
   return (Math.abs(r.target-r.entry)/risk).toFixed(2); }
 function statCard(l,v,cls){ return `<div class=stat><div class=l>${l}</div><div class="v ${cls||''}">${v}</div></div>`; }
 
-async function tickIdeas(){
- let s; try{ s=await(await fetch('/api/ideas')).json(); }catch(e){ return; }
- const st=s.stats||{};
- const noven=(s.pipeline&&s.pipeline.no_venue)||0;
- document.getElementById('ideas_sub').innerHTML =
-   `${st.open_n||0} ongoing · ${st.n_resolved||0} closed · cap ${s.cap}`
-   + (noven?` · <span style="color:var(--dn)">${noven} can't execute (no broker API for their market)</span>`:'')
-   + ` · <span style="color:var(--dim)">risk-normalised to $${(st.risk_usd||0).toLocaleString()}/trade</span>`;
- // header stats — headline is the platform-agnostic, same-risk-per-trade P&L
- const wr = st.win_rate==null?'—':(100*st.win_rate).toFixed(0)+'%';
- const rUsd = st.pnl_risk_usd, totR = st.total_r;
- document.getElementById('ideas_stats').innerHTML =
-   statCard(`P&amp;L · same risk/trade <span style="color:var(--dim)">($${(st.risk_usd||0).toLocaleString()}=1R)</span>`,
-            usd(rUsd), (rUsd||0)>=0?'pos':'neg')
- + statCard('Net R', totR==null?'—':(totR>=0?'+':'')+totR, (totR||0)>=0?'pos':'neg')
- + statCard('Avg R/trade', st.avg_r==null?'—':(st.avg_r>=0?'+':'')+st.avg_r, (st.avg_r||0)>=0?'pos':'neg')
- + statCard('Won / Lost', `<span class=pos>${st.wins||0}</span> / <span class=neg>${st.losses||0}</span>`)
- + statCard('Win rate', wr)
- + statCard('Avg R:R <span style="color:var(--dim)">(planned)</span>', st.avg_rr==null?'—':st.avg_rr)
- + statCard('Ongoing', st.open_n||0);
-
- // ongoing
- const bo=document.getElementById('body_ongoing'), eo=document.getElementById('empty_ongoing');
- document.getElementById('cnt_ongoing').textContent = '('+(s.ongoing?s.ongoing.length:0)+')';
- if(!s.ongoing||!s.ongoing.length){ eo.style.display=''; document.getElementById('tbl_ongoing').style.display='none'; }
- else { eo.style.display='none'; document.getElementById('tbl_ongoing').style.display='';
-  bo.innerHTML = s.ongoing.map(r=>`<tr>
-    <td>${thumbCell(r)}</td>
-    <td><b style="color:var(--ink)">${r.symbol||'?'}</b></td>
-    <td>${ideaDir(r.direction)}</td>
-    <td>${px(r.entry)}</td><td>${px(r.target)}</td><td>${px(r.stop)}</td>
-    <td>${rr(r)}</td><td>${r.timeframe||'—'}</td>
-    <td>${brokerCell(r.broker)}</td>
-    <td>${fmtDT(r.exec_ts)}</td>
-    <td><span class="st st-${r.status}">${r.status==='open'?'filled':'working'}</span></td>
-    <td>${r.confidence!=null?(r.confidence*100).toFixed(0)+'%':'—'}</td>
-    <td><a class=idea-link href="${r.url}" target=_blank rel=noopener>open ↗</a></td>
-  </tr>`).join(''); }
-
- // previous
- const bp=document.getElementById('body_prev'), ep=document.getElementById('empty_prev');
- document.getElementById('cnt_prev').textContent = '('+(s.previous?s.previous.length:0)+')';
- if(!s.previous||!s.previous.length){ ep.style.display=''; document.getElementById('tbl_prev').style.display='none'; }
- else { ep.style.display='none'; document.getElementById('tbl_prev').style.display='';
-  bp.innerHTML = s.previous.map(r=>{
-   const win=(r.ret_bps||0)>0;
-   return `<tr>
-    <td>${thumbCell(r)}</td>
-    <td><b style="color:var(--ink)">${r.symbol||'?'}</b></td>
-    <td>${ideaDir(r.direction)}</td>
-    <td>${px(r.entry)}</td><td>${px(r.exit)}</td>
-    <td class="${win?'pos':'neg'}">${r.outcome||''}</td>
-    <td class="${win?'pos':'neg'}">${r.r_multiple==null?'—':(r.r_multiple>=0?'+':'')+r.r_multiple+'R'}</td>
-    <td class="${win?'pos':'neg'}">${usd(r.pnl_risk_usd)} <span style="color:var(--dim)">(${r.ret_bps>0?'+':''}${r.ret_bps}bps)</span></td>
-    <td>${r.timeframe||'—'}</td>
-    <td>${brokerCell(r.broker)}</td>
-    <td>${fmtDT(r.exec_ts)}</td>
-    <td><a class=idea-link href="${r.url}" target=_blank rel=noopener>open ↗</a></td>
-  </tr>`; }).join(''); }
-}
 tick();setInterval(tick,30000);
 </script>"""
 
