@@ -46,7 +46,7 @@ SYMBOLS = os.environ.get("CRYPTO_SYMBOLS",
     "KSMUSDT,WOOUSDT,GMXUSDT,ARKMUSDT,BLURUSDT,SUSHIUSDT,YGGUSDT,MASKUSDT,"
     "CFXUSDT,IMXUSDT,MINAUSDT,ARUSDT").split(",")
 
-ZONE_TFS = ["5m", "15m", "1h"]
+ZONE_TFS = ["5m"]                                   # ≤5min only (user mandate 2026-06-21)
 TF_CODE = {"5m": "5", "15m": "15", "1h": "60"}      # Bybit kline interval codes
 SCAN_BARS = int(os.environ.get("CRYPTO_SCAN_BARS", "260"))
 

@@ -49,7 +49,7 @@ SYMBOLS = os.environ.get("EQUITY_SYMBOLS",
     # ETFs (sector / index)
     "XLF,XLE,XLV,XLK,XLI,ARKK,IWM,DIA,SMH,XBI,GLD,XLU").split(",")
 LTF = {"5m": "1m", "15m": "5m", "1h": "15m"}
-ZONE_TFS = ["5m", "15m", "1h"]
+ZONE_TFS = ["5m"]                                   # ≤5min only (user mandate 2026-06-21)
 BRACKET_MAXBARS = 24
 
 # display base -> signal base (the fn key used by _bracket/_binary).
