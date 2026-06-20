@@ -54,9 +54,10 @@ BRACKET_MAXBARS = 24
 
 # display base -> signal base (the fn key used by _bracket/_binary).
 # Zone/bracket run on ZONE_TFS; binary on 5m.
-ZONE_BRACKET = {
-    "gaptrav_eq": "gaptrav",          # deduped: tight/far_targets were gaptrav variants
-}
+# one gap strategy total (user mandate 2026-06-21): the single gaptrav rep lives
+# on crypto (gaptrav_cx_5m, Bybit — 24/7, most throughput). equities run the two
+# binary families only.
+ZONE_BRACKET = {}
 BINARY = {"meanrev_eq": "meanrev", "wick_fade_eq": "wick_fade"}  # 5m only; 2 distinct families
 # zone_break dropped on equities: its profile engine needs dense 24/7 ltf
 # coverage that equity overnight gaps starve. gaptrav family uses equity_zones().

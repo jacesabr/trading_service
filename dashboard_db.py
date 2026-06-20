@@ -125,7 +125,7 @@ def _build_cards():
         # order:=Alpaca crypto round-trip · bracket:=Alpaca equity OCO · byb*=Bybit
         # demo. ret_bps is the realized round-trip (real spread already in the fill).
         ex = [e for e in execs if e["strategy"] == name]
-        real = [e for e in ex if (e.get("ref") or "").startswith(("order:", "bracket:", "byb"))]
+        real = [e for e in ex if (e.get("ref") or "").startswith(("order:", "bracket:", "byb", "kalshi"))]
         if real:
             res = [e for e in real if e.get("outcome") not in (None, "", "void")]
             ret = np.array([e["ret_bps"] or 0 for e in
@@ -187,7 +187,7 @@ def stats():
 
 
 BROKER_NAME = {"alpaca": "Alpaca paper", "binance_sim": "Binance (sim)",
-               "oanda": "OANDA", "kraken": "Kraken paper",
+               "oanda": "OANDA", "kraken": "Kraken paper", "kalshi": "Kalshi (settlement)",
                "bybit_demo": "Bybit demo", "binance_futures": "Binance futures demo"}
 
 

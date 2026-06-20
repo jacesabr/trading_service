@@ -133,9 +133,11 @@ flowchart LR
     subgraph live [live batteries — daily.py cron, every 2h]
         CP[crypto_paper] --> BY[bybit_orders → Bybit demo]
         EP[equity_paper] --> AL[equity_orders → Alpaca paper]
+        KP[kalshi_paper] --> KA[Kalshi API → real settlement]
     end
     BY --> DB[(db.py → Neon / SQLite<br/>executions)]
     AL --> DB
+    KA --> DB
     DB --> DASH[dashboard_db.py<br/>realized broker cards · /admin · /docs]
     R --> DASH
 ```
@@ -146,26 +148,28 @@ flowchart LR
   next-bar edges are what get falsified here.
 - **live batteries** (`daily.py`, every 2h): `crypto_paper` places real **Bybit
   demo** 5m brackets across the perp universe; `equity_paper` places real **Alpaca
-  paper** 5m orders. fills are broker-confirmed and land in `executions`.
+  paper** 5m orders; `kalshi_paper` scores its vol model against **Kalshi's real
+  settlement**. all outcomes are API-verified and land in `executions`.
 - **dashboard** (`dashboard_db.py`): public cards sorted by realized P&L, `/admin`
   (auth), and `/docs` (this document).
 
 ---
 
-## current roster (5)
+## current roster (4)
 
 | name | venue (real API) | kind | family |
 |---|---|---|---|
-| `gaptrav_cx_5m` | Bybit demo | bracket | zone/gap |
-| `gaptrav_eq_5m` | Alpaca paper | bracket | zone/gap |
+| `gaptrav_cx_5m` | Bybit demo | bracket | zone/gap — **the one gap** (crypto, 24/7) |
 | `meanrev_eq_5m` | Alpaca paper | binary | mean-reversion |
 | `wick_fade_eq_5m` | Alpaca paper | binary | wick-fade |
-| `kalshi_crypto_model` | Kalshi | binary | prediction-market *(engine pending)* |
+| `kalshi_crypto_model` | Kalshi | binary | prediction-market (vol model vs settlement) |
 
 deduped 2026-06-21: the zone/gap monoculture (gaptrav_tight / far_targets /
-meanrev_confluence + all 15m/1h children) collapsed to one gaptrav rep per venue.
-non-API strategies (Polymarket `meanrev`, `meanrev_spot`, `clv_*`, `zone_break_bias`)
-deleted. the job now is to **add genuinely different ≤5m families** via the lab.
+meanrev_confluence + all 15m/1h children) collapsed to **one** gaptrav rep, kept on
+crypto. non-API strategies (Polymarket `meanrev`, `meanrev_spot`, `clv_*`,
+`zone_break_bias`) deleted. `kalshi_crypto_model` scores a driftless-lognormal vol
+model against Kalshi's **real finalized settlement** (no orders — paper, API-verified
+ground truth). the job now is to **add genuinely different ≤5m families** via the lab.
 
 ---
 
@@ -252,11 +256,13 @@ strategy logic:
 
 ---
 
-## decisions to talk about
+## next / open
 
-- **Kalshi engine** — `kalshi_crypto_model` is registered but the demo-API engine
-  was deleted in the cleanup. rebuild it (real API, fits rule 3) or drop the card?
-- **zone/gap** — it's ~breakeven-to-negative and a historical bias. keep one rep
-  as a control, or retire it entirely and go pure new-family search?
-- **live path** — only worth discussing if anything ever survives walk-forward
-  *and* broker-verified paper. the $1 CAD-risk Bybit-perp route is the candidate.
+- **add new ≤5m families** — the standing job. zone/gap is the only TA family left
+  and it's ~breakeven; the lab exists to find genuinely *different* ones (momentum,
+  microstructure, volatility, seasonality, …). most will be rejected — that's the
+  point.
+- **Kalshi** — wired + verified (vol model vs real settlement, RSA-authed live API);
+  now accumulating calls. evaluate calibration once enough have settled.
+- **live path** — only worth discussing if something survives walk-forward *and*
+  broker-verified paper. the $1 CAD-risk Bybit-perp route is the candidate.

@@ -36,13 +36,24 @@ def main():
     except Exception as e:
         out["crypto_orders"] = {"error": str(e)[:200]}
 
+    # --- Kalshi crypto settlement model (real-API ground truth, paper) ---
+    try:
+        import kalshi_paper as kx
+        out["kalshi"] = {"resolved": kx.resolve_open(), "recorded": kx.collect()}
+    except Exception as e:
+        out["kalshi"] = {"error": str(e)[:200]}
+
     o = out.get("equity_orders", {}); co = out.get("crypto_orders", {})
+    ka = out.get("kalshi", {})
     print(f"[daily {started}] eq_orders: resolved={o.get('resolved','?')} "
           f"placed={o.get('placed','?')}"
           + (f" ERR={o['error']}" if "error" in o else "")
           + f" | crypto_orders: resolved={co.get('resolved','?')} "
           f"placed={co.get('placed','?')}"
-          + (f" ERR={co['error']}" if "error" in co else ""))
+          + (f" ERR={co['error']}" if "error" in co else "")
+          + f" | kalshi: resolved={ka.get('resolved','?')} "
+          f"recorded={ka.get('recorded','?')}"
+          + (f" ERR={ka['error']}" if "error" in ka else ""))
     return out
 
 

@@ -184,9 +184,11 @@ flowchart LR
     subgraph live [live batteries — daily.py cron, every 2h]
         CP[crypto_paper] --> BY[bybit_orders → Bybit demo]
         EP[equity_paper] --> AL[equity_orders → Alpaca paper]
+        KP[kalshi_paper] --> KA[Kalshi API → real settlement]
     end
     BY --> DB[(db.py → Neon / SQLite<br/>executions)]
     AL --> DB
+    KA --> DB
     DB --> DASH[dashboard_db.py<br/>realized broker cards · /admin · /docs]
     R --> DASH
 </pre>
@@ -198,8 +200,10 @@ flowchart LR
   edges are what get falsified here.</li>
   <li><strong>live batteries</strong> (<code>daily.py</code>, every 2h):
   <code>crypto_paper</code> places real <strong>Bybit demo</strong> 5m brackets;
-  <code>equity_paper</code> places real <strong>Alpaca paper</strong> 5m orders.
-  fills are broker-confirmed and land in <code>executions</code>.</li>
+  <code>equity_paper</code> places real <strong>Alpaca paper</strong> 5m orders;
+  <code>kalshi_paper</code> scores its vol model against <strong>Kalshi's real
+  settlement</strong>. all outcomes are API-verified and land in
+  <code>executions</code>.</li>
   <li><strong>dashboard</strong> (<code>dashboard_db.py</code>): public cards
   sorted by realized P&amp;L, <code>/admin</code> (auth), and <code>/docs</code>
   (this document).</li>
@@ -207,21 +211,22 @@ flowchart LR
 
 <hr>
 
-<h2>current roster (5)</h2>
+<h2>current roster (4)</h2>
 <table>
   <tr><th>name</th><th>venue (real API)</th><th>kind</th><th>family</th></tr>
-  <tr><td><code>gaptrav_cx_5m</code></td><td>Bybit demo</td><td>bracket</td><td>zone/gap</td></tr>
-  <tr><td><code>gaptrav_eq_5m</code></td><td>Alpaca paper</td><td>bracket</td><td>zone/gap</td></tr>
+  <tr><td><code>gaptrav_cx_5m</code></td><td>Bybit demo</td><td>bracket</td><td>zone/gap — <strong>the one gap</strong> (crypto, 24/7)</td></tr>
   <tr><td><code>meanrev_eq_5m</code></td><td>Alpaca paper</td><td>binary</td><td>mean-reversion</td></tr>
   <tr><td><code>wick_fade_eq_5m</code></td><td>Alpaca paper</td><td>binary</td><td>wick-fade</td></tr>
-  <tr><td><code>kalshi_crypto_model</code></td><td>Kalshi</td><td>binary</td><td>prediction-market <em>(engine pending)</em></td></tr>
+  <tr><td><code>kalshi_crypto_model</code></td><td>Kalshi</td><td>binary</td><td>prediction-market (vol model vs settlement)</td></tr>
 </table>
 <p class="dim">deduped 2026-06-21: the zone/gap monoculture (gaptrav_tight /
-far_targets / meanrev_confluence + all 15m/1h children) collapsed to one gaptrav
-rep per venue. non-API strategies (Polymarket <code>meanrev</code>,
+far_targets / meanrev_confluence + all 15m/1h children) collapsed to <strong>one</strong>
+gaptrav rep, kept on crypto. non-API strategies (Polymarket <code>meanrev</code>,
 <code>meanrev_spot</code>, <code>clv_*</code>, <code>zone_break_bias</code>)
-deleted. the job now is to <strong>add genuinely different ≤5m families</strong>
-via the lab.</p>
+deleted. <code>kalshi_crypto_model</code> scores a driftless-lognormal vol model
+against Kalshi's <strong>real finalized settlement</strong> (no orders — paper,
+API-verified ground truth). the job now is to <strong>add genuinely different ≤5m
+families</strong> via the lab.</p>
 
 <hr>
 
@@ -318,15 +323,16 @@ trades · executions · experiments · strategy_versions · lessons</code>.</p>
 
 <hr>
 
-<h2>decisions to talk about</h2>
+<h2>next / open</h2>
 <ul>
-  <li><strong>Kalshi engine</strong> — <code>kalshi_crypto_model</code> is
-  registered but the demo-API engine was deleted in the cleanup. rebuild it (real
-  API, fits rule 3) or drop the card?</li>
-  <li><strong>zone/gap</strong> — it's ~breakeven-to-negative and a historical
-  bias. keep one rep as a control, or retire it entirely and go pure new-family
-  search?</li>
-  <li><strong>live path</strong> — only worth discussing if anything ever survives
+  <li><strong>add new ≤5m families</strong> — the standing job. zone/gap is the
+  only TA family left and it's ~breakeven; the lab exists to find genuinely
+  <em>different</em> ones (momentum, microstructure, volatility, seasonality, …).
+  most will be rejected — that's the point.</li>
+  <li><strong>Kalshi</strong> — wired + verified (vol model vs real settlement,
+  RSA-authed live API); now accumulating calls. evaluate calibration once enough
+  have settled.</li>
+  <li><strong>live path</strong> — only worth discussing if something survives
   walk-forward <em>and</em> broker-verified paper. the $1 CAD-risk Bybit-perp
   route is the candidate.</li>
 </ul>
