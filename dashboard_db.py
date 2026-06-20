@@ -458,8 +458,7 @@ def admin_page():
 
 
 def _serve_doc(filename, missing):
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docs",
-                        filename)
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), filename)
     if not os.path.exists(path):
         return Response(missing, 404)
     with open(path, encoding="utf-8") as f:
@@ -468,9 +467,9 @@ def _serve_doc(filename, missing):
 
 @app.route("/docs")
 def docs_page():
-    """The living infrastructure document, served from disk so edits show live.
-    Maintained by the daily agent — see the maintenance contract inside it."""
-    return _serve_doc("INFRA.html", "INFRA.html missing")
+    """The single source of truth (thesis + rules + plan + architecture +
+    runbook), served from disk so edits show live. Canonical twin: daily_run.md."""
+    return _serve_doc("daily_run.html", "daily_run.html missing")
 
 
 if __name__ == "__main__":

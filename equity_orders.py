@@ -32,7 +32,8 @@ def armed():
 
 
 def allowed(strat):
-    allow = os.environ.get("ALPACA_EQUITY_STRATEGIES", "gaptrav_tight_eq_1h")
+    allow = os.environ.get("ALPACA_EQUITY_STRATEGIES",
+                           "gaptrav_eq_5m,meanrev_eq_5m,wick_fade_eq_5m")
     return strat in [a.strip() for a in allow.split(",") if a.strip()]
 
 
@@ -138,5 +139,6 @@ def resolve_open():
 
 if __name__ == "__main__":
     print("armed:", armed(), "| allow-list:",
-          os.environ.get("ALPACA_EQUITY_STRATEGIES", "gaptrav_tight_eq_1h"),
+          os.environ.get("ALPACA_EQUITY_STRATEGIES",
+                         "gaptrav_eq_5m,meanrev_eq_5m,wick_fade_eq_5m"),
           "| qty:", QTY)

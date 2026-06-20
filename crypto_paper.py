@@ -51,8 +51,10 @@ TF_CODE = {"5m": "5", "15m": "15", "1h": "60"}      # Bybit kline interval codes
 SCAN_BARS = int(os.environ.get("CRYPTO_SCAN_BARS", "260"))
 
 # display base -> signal base. The bracket family that maps to a broker-held TP/SL.
-BRACKET = {"gaptrav_cx": "gaptrav", "gaptrav_tight_cx": "gaptrav_tight",
-           "far_targets_cx": "far_targets", "meanrev_confluence_cx": "meanrev_confluence"}
+# Deduped 2026-06-21: gaptrav_tight / far_targets / meanrev_confluence were
+# near-identical zone/gap variants of gaptrav (stop/target tweaks) — collapsed to
+# the one representative. New, genuinely-different families get added via the lab.
+BRACKET = {"gaptrav_cx": "gaptrav"}
 
 _KLINE = bybit_orders.BASE + "/v5/market/kline"
 

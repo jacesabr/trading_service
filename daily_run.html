@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>daily_run — the trading lab's single source of truth</title>
+<style>
+  :root{
+    --bg:#faf9f5; --panel:#fff; --ink:#23211c; --dim:#6b6a63;
+    --line:#e7e3d6; --accent:#c15f3c; --code:#f4f2ea; --up:#1f8a5b; --dn:#ce4a3a;
+  }
+  *{box-sizing:border-box}
+  body{background:var(--bg);color:var(--ink);margin:0;
+    font:16px/1.62 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased}
+  main{max-width:760px;margin:0 auto;padding:48px 22px 120px}
+  h1{font-size:25px;font-weight:600;letter-spacing:-.01em;margin:0 0 6px}
+  h2{font-size:18px;font-weight:600;margin:38px 0 10px;padding-bottom:6px;
+    border-bottom:1px solid var(--line)}
+  h3{font-size:14px;font-weight:600;color:var(--dim);text-transform:uppercase;
+    letter-spacing:.04em;margin:22px 0 6px}
+  p,li{color:var(--ink)} .dim,em.note{color:var(--dim)}
+  a{color:var(--accent)}
+  code{background:var(--code);border:1px solid var(--line);border-radius:4px;
+    padding:.5px 5px;font:13px ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+  pre{background:var(--code);border:1px solid var(--line);border-radius:10px;
+    padding:14px 16px;overflow-x:auto}
+  pre code{background:none;border:0;padding:0;font-size:12.5px;line-height:1.5}
+  hr{border:0;border-top:1px solid var(--line);margin:34px 0}
+  ol,ul{padding-left:22px} li{margin:4px 0}
+  table{border-collapse:collapse;width:100%;margin:12px 0;font-size:14px}
+  th,td{border:1px solid var(--line);padding:6px 10px;text-align:left;vertical-align:top}
+  th{background:var(--code);font-weight:600}
+  blockquote{margin:0;color:var(--dim)}
+  .lede{color:var(--dim);font-size:15px}
+  .rules li{margin:8px 0}
+  .mermaid{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:16px;margin:14px 0;text-align:center}
+  .kbd{color:var(--up);font-weight:600}
+</style>
+</head>
+<body>
+<main>
+
+<h1>daily_run — the trading lab's single source of truth</h1>
+<p class="lede">this one doc holds <strong>everything</strong>: the thesis, the rules,
+the architecture, the current roster, the research procedure, the infra/deploy
+reference, and the do-not-relitigate lessons. if a rule or plan isn't here, it
+doesn't exist.</p>
+<p class="lede"><code>daily_run.md</code> is canonical; <strong>this
+<code>daily_run.html</code> is the browser twin</strong> (also served live at
+<code>/docs</code>). edit one, mirror the other — keep them in sync on every change.</p>
+
+<hr>
+
+<h2>the honest thesis (read this first)</h2>
+<p>short-term trading edge basically <strong>isn't out there</strong>. liquid
+markets are roughly efficient, so a retail intraday technical edge is brutally
+hard — not because it's rigged, but because it's competitive and net-negative
+after costs. the <em>industry</em> around retail trading (signal sellers, gurus,
+prop-challenge firms) is mostly a scam that profits from hope and fees.</p>
+<p>so this lab is two things:</p>
+<ul>
+  <li>a standing <strong>reminder</strong> that the edge isn't there, and</li>
+  <li>a way to <strong>know instead of guess</strong> — a no-lookahead,
+  broker-verified falsification machine. its honest output is usually "no edge
+  here," and that's the correct, valuable answer.</li>
+</ul>
+<p>we still <strong>genuinely keep trying</strong> new ≤5m strategies. most get
+rejected. disciplined rejection, recorded in <code>lessons</code>, <strong>is the
+product</strong> — not a failed run. paper only; no real money is ever at risk.</p>
+
+<hr>
+
+<h2>the hard rules (never cross)</h2>
+<ol class="rules">
+  <li><strong>NO LOOKAHEAD (cardinal).</strong> every signal must be computable
+  from data available <em>before</em> the outcome bar. the harness enforces it —
+  predictions are made as_of bar t and scored on bar t+1's independent close.
+  <strong>write the leak test first.</strong> if it's ~50% leak-free, it does not
+  work, no matter how good the in-sample number looks.</li>
+  <li><strong>≤5 minutes.</strong> every timeframe is ≤5m
+  (<code>ZONE_TFS=["5m"]</code>). no 15m/1h/swing.</li>
+  <li><strong>API-testable or deleted.</strong> a strategy ships only if it runs
+  on a <strong>real broker/exchange API</strong> with broker-confirmed fills:
+  <strong>Bybit demo</strong> (crypto), <strong>Alpaca paper</strong> (equities),
+  <strong>Kalshi demo</strong> (prediction markets). no self-resolved bar-replay,
+  no simulators. <strong>Polymarket is OUT</strong> — no first-party paper API
+  (only mainnet + third-party sims = banned).</li>
+  <li><strong>verified data only.</strong> the dashboard shows broker-confirmed
+  P&amp;L and win/loss — never a paper calc. derived metrics are <strong>realized
+  from fills</strong> (e.g. R:R = mean win bps / mean loss bps), never planned
+  geometry.</li>
+  <li><strong>diversity / no duplicates.</strong> don't keep two near-identical
+  signals (two MAs, two volume strategies) unless they're <em>vastly</em>
+  different. collapse variants to one representative; spend effort on genuinely
+  different families.</li>
+  <li><strong>paper only.</strong> the live-money path refuses unless someone sets
+  <code>LIVE_BUDGET_ARMED=1</code>. leave it off.</li>
+</ol>
+
+<hr>
+
+<h2>the loop — how a new idea proves out</h2>
+<pre class="mermaid">
+flowchart TD
+    A[idea: a genuinely different ≤5m signal] --> B[lab leaktest<br/>held-out TEST, leak-free]
+    B -- "z &lt; 2 (≈50%)" --> X[lab lesson<br/>log why, stop]
+    B -- "z ≥ 2 tilt" --> C[lab walkforward<br/>≥4/5 windows, both symbols]
+    C -- "not robust" --> X
+    C -- robust --> D[wire to a real API battery<br/>Bybit / Alpaca / Kalshi]
+    D --> E[broker-verified paper fills]
+    E --> F[dashboard + lessons decide]
+    X --> F
+</pre>
+<p>the bar to revisit anything in <strong>do-not-relitigate</strong>: a
+walk-forward positive in <strong>≥4/5 windows on BOTH symbols, leak-free</strong>.
+a single test-split number is not enough.</p>
+
+<hr>
+
+<h2>the daily research run (in order)</h2>
+<ol>
+  <li><strong>orient.</strong> read this doc + <code>python lab.py lessons</code>
+  (don't relitigate settled-dead ideas). run <code>python daily.py</code> so open
+  positions resolve and new ones record.</li>
+  <li><strong>pick a focus</strong> (rotate; don't do all three daily):
+    <ul>
+      <li><strong>A — new research.</strong> find a genuinely <em>different</em>
+      ≤5m signal family (momentum/trend, breakout, volatility,
+      microstructure/order-flow, seasonality, statistical/ML, cross-asset) —
+      <strong>do NOT default to zone/gap.</strong> prior-art check. then
+      <code>lab new &lt;name&gt; --venue &lt;bybit_demo|alpaca|kalshi&gt;</code> →
+      write <code>rlab/impl/&lt;name&gt;.py</code> (pure, leak-free) →
+      <code>lab leaktest</code> (fail ⇒ <code>lab lesson</code> + stop) →
+      <code>lab walkforward</code> (not robust ⇒ <code>lab lesson</code>).</li>
+      <li><strong>B — deepen</strong> a surviving paper strategy: more data,
+      more instruments.</li>
+      <li><strong>C — dedup / retire</strong> drift: collapse near-duplicates;
+      <code>lab retire --reason</code>.</li>
+    </ul>
+  </li>
+  <li><strong>record outcomes.</strong> every rejection →
+  <code>lab lesson "&lt;idea&gt;" --evidence "..."</code>.</li>
+  <li><strong>upkeep (mandatory).</strong> if you changed any infra (a module,
+  table, env var, the roster), <strong>update THIS doc (.md + .html) in the same
+  change.</strong></li>
+  <li><strong>audit (mandatory).</strong> our numbers must match the venue's
+  truth. run a resolve cycle (<code>python daily.py</code>) and confirm recorded
+  fills reconcile with Bybit / Alpaca before shipping.</li>
+  <li><strong>ship.</strong> commit + push to <code>master</code>, then deploy
+  (see infra below).</li>
+</ol>
+
+<hr>
+
+<h2>lab commands</h2>
+<pre><code>python lab.py list                       lifecycle of every strategy
+python lab.py status &lt;name&gt;              manifest + recent ledger
+python lab.py lessons                    do-not-repeat memory (READ FIRST)
+python lab.py new &lt;name&gt; --venue bybit_demo --symbols BTCUSDT,ETHUSDT
+python lab.py leaktest &lt;name&gt;            held-out TEST hit, leak-free (the GATE)
+python lab.py backtest &lt;name&gt;            TRAIN/VAL/TEST hit + edge vs baseline
+python lab.py walkforward &lt;name&gt;         rolling OOS windows (robust = ≥4/5)
+python lab.py gridsearch &lt;name&gt;          sweep param_grid on VALIDATION
+python lab.py lesson "&lt;idea&gt;" --evidence "..." [--redo "..."]
+python lab.py retire &lt;name&gt; --reason "..."
+
+python data.py BTCUSDT 5m 1m 2025-06 2026-05    # fetch research data (≤5m)
+python daily.py                                 # resolve + place real broker orders
+python db.py                                     # init/verify the store</code></pre>
+
+<hr>
+
+<h2>architecture (current, true)</h2>
+<pre class="mermaid">
+flowchart LR
+    subgraph research [research lab — leak-safe, offline]
+        DT[data.py] --> CSV[(data/*.csv)]
+        CSV --> H[rlab/harness.py<br/>leak / backtest / walkforward]
+        L[lab.py CLI] --> H
+        L --> R[(rlab/registry/*.json<br/>manifests)]
+    end
+    subgraph live [live batteries — daily.py cron, every 2h]
+        CP[crypto_paper] --> BY[bybit_orders → Bybit demo]
+        EP[equity_paper] --> AL[equity_orders → Alpaca paper]
+    end
+    BY --> DB[(db.py → Neon / SQLite<br/>executions)]
+    AL --> DB
+    DB --> DASH[dashboard_db.py<br/>realized broker cards · /admin · /docs]
+    R --> DASH
+</pre>
+<ul>
+  <li><strong>research lab</strong> (this is what "test strategies" means):
+  <code>data.py</code> fetches ≤5m klines → <code>rlab/harness.py</code> runs the
+  leak-free TEST / walk-forward → <code>lab.py</code> is the CLI → strategies are
+  manifests in <code>rlab/registry/*.json</code>. binary/directional next-bar
+  edges are what get falsified here.</li>
+  <li><strong>live batteries</strong> (<code>daily.py</code>, every 2h):
+  <code>crypto_paper</code> places real <strong>Bybit demo</strong> 5m brackets;
+  <code>equity_paper</code> places real <strong>Alpaca paper</strong> 5m orders.
+  fills are broker-confirmed and land in <code>executions</code>.</li>
+  <li><strong>dashboard</strong> (<code>dashboard_db.py</code>): public cards
+  sorted by realized P&amp;L, <code>/admin</code> (auth), and <code>/docs</code>
+  (this document).</li>
+</ul>
+
+<hr>
+
+<h2>current roster (5)</h2>
+<table>
+  <tr><th>name</th><th>venue (real API)</th><th>kind</th><th>family</th></tr>
+  <tr><td><code>gaptrav_cx_5m</code></td><td>Bybit demo</td><td>bracket</td><td>zone/gap</td></tr>
+  <tr><td><code>gaptrav_eq_5m</code></td><td>Alpaca paper</td><td>bracket</td><td>zone/gap</td></tr>
+  <tr><td><code>meanrev_eq_5m</code></td><td>Alpaca paper</td><td>binary</td><td>mean-reversion</td></tr>
+  <tr><td><code>wick_fade_eq_5m</code></td><td>Alpaca paper</td><td>binary</td><td>wick-fade</td></tr>
+  <tr><td><code>kalshi_crypto_model</code></td><td>Kalshi</td><td>binary</td><td>prediction-market <em>(engine pending)</em></td></tr>
+</table>
+<p class="dim">deduped 2026-06-21: the zone/gap monoculture (gaptrav_tight /
+far_targets / meanrev_confluence + all 15m/1h children) collapsed to one gaptrav
+rep per venue. non-API strategies (Polymarket <code>meanrev</code>,
+<code>meanrev_spot</code>, <code>clv_*</code>, <code>zone_break_bias</code>)
+deleted. the job now is to <strong>add genuinely different ≤5m families</strong>
+via the lab.</p>
+
+<hr>
+
+<h2>do-not-relitigate (settled negative)</h2>
+<p>these were tested thoroughly and failed. the revisit bar is a walk-forward
+positive in ≥4/5 windows on BOTH symbols, leak-free — not a single number.</p>
+<ul>
+  <li><strong>gap-traversal far targets (k≥2):</strong> fails walk-forward; a
+  multiple-comparisons artifact (RR scales but expectancy doesn't survive).</li>
+  <li><strong>gap-traversal as a single-candle signal:</strong> 49% leak-free
+  next-candle (z=-2.6).</li>
+  <li><strong>wick-rejection fade:</strong> 45–48% on close.</li>
+  <li><strong>zone-break bias:</strong> 50.4%.</li>
+  <li><strong>meanrev (RSI/MFI → Polymarket):</strong> backtested 54–57% but
+  <strong>live paper refuted it</strong> (45.9% over 109 bets, worst on the board)
+  → demoted. <strong>trust live paper over backtest ranking.</strong></li>
+  <li><strong>TradingView public ideas:</strong> 180 authors, sub-coinflip and
+  anti-predictive → whole pipeline deleted.</li>
+  <li>the <strong>"28 R:R"</strong> that triggered this cleanup was a measurement
+  artifact (planned bracket geometry with a ~2-tick stop), not edge. metrics are
+  realized-only now.</li>
+</ul>
+
+<hr>
+
+<h2>execution discipline (baked into the live order layers)</h2>
+<p>hard-won from a full broker audit; these guards live in the order code, not in
+strategy logic:</p>
+<ul>
+  <li><strong>validate entry vs live price before placing.</strong> a limit on the
+  wrong side of the market fills <em>marketable</em> (now), not at the drawn level
+  — stranding a stop sized to the intended entry. the equity layer gates on this.</li>
+  <li><strong>min stop distance + min RR.</strong> reject any bracket whose stop
+  sits inside the timeframe noise floor or whose RR &lt; ~0.8. this is the
+  <em>same</em> failure that produced the bogus "28 R:R" — a ~2-tick stop is an
+  instant, meaningless loss.</li>
+  <li><strong>atomic brackets, re-anchored to the fill.</strong> Bybit entries
+  place with TP+SL attached at creation and re-anchor to the actual fill
+  (preserves RR); never a naked position.</li>
+</ul>
+
+<hr>
+
+<h2>infra / deploy reference</h2>
+<ul>
+  <li><strong>GitHub:</strong> <code>jacesabr/trading_service</code> @
+  <code>master</code> (public).</li>
+  <li><strong>Neon:</strong> <code>withered-wind-02493492</code> /
+  <code>neondb</code> (<code>DATABASE_URL</code> pooled, us-west-2).
+  <code>db.py</code> auto-selects Postgres if <code>DATABASE_URL</code> is set,
+  else local SQLite.</li>
+</ul>
+<table>
+  <tr><th>service</th><th>id</th><th>role</th></tr>
+  <tr><td>web <code>signal-dashboard</code></td><td><code>srv-d8ncr4k8aovs73ab7bb0</code></td><td><code>gunicorn dashboard_db:app</code> → signal-dashboard-3rzj.onrender.com</td></tr>
+  <tr><td>cron <code>signal-daily</code></td><td><code>crn-d8o1svjeo5us738btld0</code></td><td><code>python daily.py</code> every 2h — real Bybit + Alpaca orders</td></tr>
+  <tr><td>worker <code>signal-runner</code></td><td><code>srv-d8ncrf3tqb8s73d1q1rg</code></td><td><strong>SUSPENDED</strong> (sim retired)</td></tr>
+</table>
+<p><strong>deploy:</strong> auto-deploy is unreliable; after
+<code>git push origin master</code>, trigger each affected service:</p>
+<pre><code>curl -s -X POST -H "Authorization: Bearer $RENDER_API_KEY" \
+  "https://api.render.com/v1/services/&lt;service-id&gt;/deploys" -d '{}'</code></pre>
+<p>redeploy the <strong>dashboard</strong> for manifest/UI changes; the
+<strong>cron</strong> for battery changes.</p>
+<p><strong>env vars (names only; values in <code>.env</code> / <code>secrets/</code>
+/ Render):</strong></p>
+<ul>
+  <li>cron: <code>DATABASE_URL</code>, <code>BYBIT_DEMO_KEY/SECRET</code>,
+  <code>BYBIT_DEMO_ORDERS=1</code>, <code>BYBIT_SIZE_MODE</code>/<code>BYBIT_NOTIONAL</code>,
+  <code>ALPACA_KEY/SECRET</code>, <code>ALPACA_EQUITY_ORDERS=1</code>,
+  <code>ALPACA_EQUITY_STRATEGIES=gaptrav_eq_5m,meanrev_eq_5m,wick_fade_eq_5m</code>,
+  <code>KALSHI_API_KEY_ID</code>/<code>KALSHI_PRIVATE_KEY_PATH</code>
+  (→ <code>secrets/kalshi_rsa.pem</code>).</li>
+  <li>dashboard: <code>DATABASE_URL</code>, <code>ADMIN_USER</code>,
+  <code>ADMIN_PASSWORD</code> (gates <code>/admin</code>).</li>
+</ul>
+<p><strong>deps:</strong> <code>pandas, numpy, flask, gunicorn, psycopg2-binary,
+scikit-learn, cryptography</code> (<code>requirements.txt</code>). add a dep there
+<strong>and</strong> here. <strong>DB tables:</strong> <code>signals · bets ·
+trades · executions · experiments · strategy_versions · lessons</code>.</p>
+
+<hr>
+
+<h2>pieces / choices</h2>
+<table>
+  <tr><th>piece</th><th>choice now</th><th>why</th><th>later / alternative</th></tr>
+  <tr><td>timeframe</td><td>5m only</td><td>≤5m mandate; cuts noise/churn</td><td>add 1m if a 1m family proves out</td></tr>
+  <tr><td>crypto venue</td><td>Bybit demo</td><td>real API, %-fee, long+short, 24/7</td><td>Hyperliquid / Kraken testnet</td></tr>
+  <tr><td>equity venue</td><td>Alpaca paper</td><td>real API bracket OCO</td><td>—</td></tr>
+  <tr><td>prediction mkt</td><td>Kalshi (demo)</td><td>real API; Polymarket has none</td><td>rebuild Kalshi engine (pending)</td></tr>
+  <tr><td>research engine</td><td>binary/directional leak test + walk-forward</td><td>proves an edge existed before the outcome</td><td>bracket backtest runs live instead</td></tr>
+  <tr><td>metrics</td><td>realized from broker fills</td><td>verified-data rule</td><td>—</td></tr>
+</table>
+
+<hr>
+
+<h2>decisions to talk about</h2>
+<ul>
+  <li><strong>Kalshi engine</strong> — <code>kalshi_crypto_model</code> is
+  registered but the demo-API engine was deleted in the cleanup. rebuild it (real
+  API, fits rule 3) or drop the card?</li>
+  <li><strong>zone/gap</strong> — it's ~breakeven-to-negative and a historical
+  bias. keep one rep as a control, or retire it entirely and go pure new-family
+  search?</li>
+  <li><strong>live path</strong> — only worth discussing if anything ever survives
+  walk-forward <em>and</em> broker-verified paper. the $1 CAD-risk Bybit-perp
+  route is the candidate.</li>
+</ul>
+
+</main>
+<script type="module">
+  import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+  mermaid.initialize({
+    startOnLoad: true,
+    theme: "base",
+    themeVariables: {
+      background: "#ffffff", primaryColor: "#f4f2ea", primaryBorderColor: "#c15f3c",
+      primaryTextColor: "#23211c", lineColor: "#9c9a91", fontSize: "13px",
+      fontFamily: "-apple-system,Segoe UI,Roboto,sans-serif"
+    }
+  });
+</script>
+</body>
+</html>

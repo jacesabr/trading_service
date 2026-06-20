@@ -37,7 +37,7 @@ IMPL_DIR = os.path.join(HERE, "impl")
 
 LIFECYCLES = ("research", "paper", "live_candidate", "live", "retired")
 
-# Default promotion gate (matches SYSTEM.md / STRATEGY.md bars).
+# Default promotion gate (bars defined in daily_run.md — the single source of truth).
 DEFAULT_GATE = {"min_resolved": 400, "live_within_pp": 2.0, "ev_z": 2.0}
 
 

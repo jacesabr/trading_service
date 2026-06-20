@@ -185,68 +185,12 @@ def zone_break_bias_signal(df5, df1, lookback=100):
 # ---------- Shared registry: status is honest, used by runner + dashboard --
 # kind: "binary" = predicts next-bar close direction (spot bps; + Polymarket
 #                  bet for BTC/ETH on meanrev). "bracket" = SL/TP traversal.
-STRATEGIES = {
-    "meanrev": dict(
-        label="Mean-reversion · Polymarket", kind="binary", venue="polymarket",
-        status="LIVE candidate", symbols="btc/eth",
-        method="RSI/MFI says a 5m candle is over-extended; bet the NEXT 5m "
-               "candle closes the other way. Pays on direction only — the "
-               "edge is a 54-57% hit-rate tilt, not price movement.",
-        risk="$100/signal paper. Taker fee ~3% near 50c; real edge needs maker "
-             "fills. Gate before live: 400+ bets, hit within 2pp of backtest, "
-             "avg entry price below hit rate."),
-    "meanrev_spot": dict(
-        label="Mean-reversion · spot (bps)", kind="binary", venue="spot",
-        status="data-collection (~0 bps expected)", symbols="all",
-        method="The same mean-reversion signal expressed as a regular spot "
-               "trade, held one 5m bar. Measures price-terms P&L — research "
-               "says this is ~0 bps; the edge only exists in binary payout.",
-        risk="Paper. Reported in bps of the next bar. Unvalidated on coins "
-             "other than BTC/ETH."),
-    "gaptrav": dict(
-        label="Gap-traversal · k=1", kind="bracket", venue="spot",
-        status="paper control (~breakeven)", symbols="all",
-        method="When a candle closes inside a 'gap' between two volume-profile "
-               "fib zones, trade toward the next zone (target) with the origin "
-               "zone border as stop. ~68% touch but ~0 net after costs.",
-        risk="Paper, SL/TP. Kept to watch for live divergence from the flat "
-             "backtest; not funded."),
-    "gaptrav_tight": dict(
-        label="Gap-traversal · tight stop", kind="bracket", venue="spot",
-        status="paper (TODO, untested live)", symbols="all",
-        method="Gap-traversal target, but the stop sits just beyond the entry "
-               "candle's wick instead of the zone border — higher RR per the "
-               "research TODO. The most promising un-live-tested config.",
-        risk="Paper, SL/TP. Breakeven win-rate ~55%; collecting live numbers."),
-    "meanrev_confluence": dict(
-        label="Confluence · gap × meanrev", kind="bracket", venue="spot",
-        status="paper (TODO)", symbols="all",
-        method="A gap-traversal trade taken only when the mean-reversion signal "
-               "agrees on direction. Tests whether the confluence beats either "
-               "strategy alone.",
-        risk="Paper, SL/TP. Rare (needs both to fire); expect few signals."),
-    "far_targets": dict(
-        label="Gap-traversal · far target (k=3)", kind="bracket", venue="spot",
-        status="DEAD — re-run as paper", symbols="all",
-        method="Gap-traversal aiming 3 zones out for a big reward:risk. "
-               "Research SETTLED-NEGATIVE (fails walk-forward); wired live "
-               "only to confirm the edge really is absent.",
-        risk="Paper, SL/TP. Expected to lose; this is a control."),
-    "wick_fade": dict(
-        label="Wick-rejection fade", kind="binary", venue="spot",
-        status="DEAD — re-run as paper", symbols="all",
-        method="Fade a candle's dominant wick: a long upper wick (rejection of "
-               "highs) predicts the next bar closes down, and vice-versa. "
-               "Research SETTLED-NEGATIVE (45-48%).",
-        risk="Paper, next-bar bps. Control to confirm no edge."),
-    "zone_break_bias": dict(
-        label="Zone-break bias", kind="binary", venue="spot",
-        status="DEAD — re-run as paper", symbols="all",
-        method="Directional bias from the Zone-Breaks engine: a pending "
-               "breakout predicts up, a pending breakdown predicts down. "
-               "Research SETTLED-NEGATIVE (50.4%).",
-        risk="Paper, next-bar bps. Control to confirm no edge."),
-}
+# Registry is manifest-only now (2026-06-21). The legacy human-facing dicts were
+# removed in the API-testability + dedup cleanup: every surviving strategy is a
+# self-contained child manifest (rlab/registry/*.json) wired to a real broker API
+# at 5m. The signal FUNCTIONS below stay (the live batteries import them); only the
+# legacy display registry is retired. New strategies = a manifest + an impl fn.
+STRATEGIES = {}
 
 
 if __name__ == "__main__":
