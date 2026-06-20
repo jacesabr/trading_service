@@ -132,9 +132,12 @@ def _build_cards():
                             sorted(res, key=lambda e: e["ts"])], float)
             won = np.array([1.0 if (e.get("won") or (e.get("ret_bps") or 0) > 0)
                             else 0.0 for e in res], float)
-            rr_list = [abs(e["target"] - e["entry"]) / abs(e["entry"] - e["stop"])
-                       for e in real if e.get("target") and e.get("stop")
-                       and e.get("entry") and abs(e["entry"] - e["stop"]) > 0]
+            # Realized reward:risk from BROKER-confirmed P&L (mean win / mean loss),
+            # NOT planned bracket geometry. Verified-data only: a degenerate 2-tick
+            # stop can no longer inflate this the way |target-entry|/|entry-stop| did.
+            wins = ret[ret > 0]; losses = ret[ret < 0]
+            avg_rr = (round(float(wins.mean() / -losses.mean()), 2)
+                      if len(wins) and len(losses) else None)
             vlist = [e["venue"] for e in real]
             broker_v = max(set(vlist), key=vlist.count)
             card.update(
@@ -143,7 +146,7 @@ def _build_cards():
                 hit=round(float(won.mean()), 4) if len(won) else None,
                 net_bps=round(float(ret.mean()), 1) if len(ret) else None,
                 pnl_total=round(float(ret.sum()), 1) if len(ret) else 0,
-                avg_rr=round(float(np.mean(rr_list)), 2) if rr_list else None,
+                avg_rr=avg_rr,
                 since_ts=min(e["ts"] for e in real),
                 last_age_min=_age_min(max(e["ts"] for e in real), now),
                 equity=np.round(np.cumsum(ret), 1).tolist() if len(ret) else [],
@@ -207,20 +210,21 @@ HTML = r"""<!doctype html><meta charset=utf-8>
 <title>Strategy Tracker</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
 <style>
-:root{--bg:#0B1220;--panel:#121B2E;--line:#1E2A44;--ink:#D7E0EF;--dim:#8593AC;
---up:#3FB68B;--dn:#E0556B;--live:#F5A623;--dead:#6b7280;--mono:'IBM Plex Mono',ui-monospace,monospace}
+:root{--bg:#FAF9F5;--panel:#FFFFFF;--panel2:#F4F2EA;--line:#E7E3D6;--ink:#23211C;
+--dim:#78766C;--up:#1F8A5B;--dn:#CE4A3A;--accent:#C15F3C;--live:#B07012;--dead:#9C9A91;
+--mono:'IBM Plex Mono',ui-monospace,monospace;--serif:ui-serif,Georgia,'Iowan Old Style','Times New Roman',serif}
 *{box-sizing:border-box;margin:0}
-body{background:var(--bg);color:var(--ink);font:15px/1.45 Inter,system-ui,sans-serif;padding:14px;max-width:1280px;margin:auto}
-h1{font:600 16px var(--mono);letter-spacing:.04em}
-.sub{color:var(--dim);font-size:12px;margin:4px 0 16px}
+body{background:var(--bg);color:var(--ink);font:15px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:28px 18px;max-width:1180px;margin:auto;-webkit-font-smoothing:antialiased}
+h1{font:500 27px/1.2 var(--serif);letter-spacing:-.01em}
+.sub{color:var(--dim);font-size:13px;margin:6px 0 22px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:14px}
-.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;display:flex;flex-direction:column}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;display:flex;flex-direction:column}
 .ph{display:flex;justify-content:space-between;align-items:flex-start;gap:8px;margin-bottom:6px}
 .ph h2{font:600 13px var(--mono);text-transform:uppercase;letter-spacing:.04em;line-height:1.3}
-.tag{font-size:10px;padding:2px 7px;border-radius:4px;font-weight:600;white-space:nowrap}
-.tag.live{background:#1d3a2e;color:var(--up)}
-.tag.paper{background:#3a3320;color:var(--live)}
-.tag.dead{background:#2a2f38;color:var(--dead)}
+.tag{font-size:10px;padding:2px 7px;border-radius:5px;font-weight:600;white-space:nowrap}
+.tag.live{background:#E3F1E9;color:var(--up)}
+.tag.paper{background:#F6EBD6;color:var(--live)}
+.tag.dead{background:#ECEAE1;color:var(--dead)}
 .method{font-size:12px;color:var(--dim);margin:6px 0 10px}
 .kpis{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:8px}
 .kpi{font:600 20px var(--mono);font-variant-numeric:tabular-nums}
@@ -231,74 +235,75 @@ h1{font:600 16px var(--mono);letter-spacing:.04em}
 canvas{max-height:120px;margin:4px 0}
 .empty{color:var(--dim);font-size:12px;padding:14px 0;text-align:center}
 .risk{font-size:11px;color:var(--dim);border-top:1px solid var(--line);padding-top:8px;margin-top:auto}
-.paper{font-size:9px;background:#22304a;color:#9db4e0;padding:1px 5px;border-radius:3px;font-weight:600;letter-spacing:.04em}
+.paper{font-size:9px;background:#F1ECF8;color:#6E5BA8;padding:1px 5px;border-radius:4px;font-weight:600;letter-spacing:.04em}
 .pnl{font:700 22px var(--mono);margin:8px 0 6px;font-variant-numeric:tabular-nums}
 .pnl small{font:400 10px var(--mono);color:var(--dim);text-transform:uppercase;letter-spacing:.04em}
-.conf{font-size:11px;color:var(--dim);background:#0f1828;border-left:2px solid var(--up);padding:6px 9px;border-radius:0 6px 6px 0;margin:8px 0}
-details{margin-top:8px}summary{font-size:11px;color:var(--live);cursor:pointer;font-family:var(--mono)}
+.conf{font-size:11px;color:var(--dim);background:var(--panel2);border-left:2px solid var(--up);padding:6px 9px;border-radius:0 6px 6px 0;margin:8px 0}
+details{margin-top:8px}summary{font-size:11px;color:var(--accent);cursor:pointer;font-family:var(--mono)}
 table{width:100%;border-collapse:collapse;font:11px var(--mono);margin-top:6px}
-th,td{text-align:right;padding:2px 4px;border-bottom:1px solid var(--line)}
+th,td{text-align:right;padding:3px 4px;border-bottom:1px solid var(--line)}
 th:first-child,td:first-child{text-align:left}
-.sec{font:600 13px var(--mono);text-transform:uppercase;letter-spacing:.06em;margin:22px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--line);color:var(--ink)}
-.sec small{font-weight:400;text-transform:none;letter-spacing:0;color:var(--dim);font-size:11px}
-#sec_live{color:var(--up)}
-.livedot{width:9px;height:9px;border-radius:50%;background:var(--up);display:inline-block;margin-right:8px;box-shadow:0 0 0 0 rgba(63,182,139,.7);animation:pulse 2s infinite}
-@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(63,182,139,.6)}70%{box-shadow:0 0 0 7px rgba(63,182,139,0)}100%{box-shadow:0 0 0 0 rgba(63,182,139,0)}}
-.panel.livecard{border-color:var(--up);box-shadow:0 0 0 1px rgba(63,182,139,.25)}
-.real{font:600 12px var(--mono);background:#0f2018;border-left:2px solid var(--up);padding:7px 10px;border-radius:0 6px 6px 0;margin:8px 0;color:var(--ink)}
+th{color:var(--dim);font-weight:600}
+.sec{font:600 16px/1.3 var(--serif);letter-spacing:0;margin:28px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line);color:var(--ink);text-transform:none}
+.sec small{font:400 12px ui-sans-serif,system-ui,sans-serif;text-transform:none;letter-spacing:0;color:var(--dim)}
+#sec_live{color:var(--ink)}
+.livedot{width:9px;height:9px;border-radius:50%;background:var(--up);display:inline-block;margin-right:8px;box-shadow:0 0 0 0 rgba(31,138,91,.6);animation:pulse 2s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(31,138,91,.5)}70%{box-shadow:0 0 0 7px rgba(31,138,91,0)}100%{box-shadow:0 0 0 0 rgba(31,138,91,0)}}
+.panel.livecard{border-color:var(--up);box-shadow:0 0 0 1px rgba(31,138,91,.22)}
+.real{font:600 12px var(--mono);background:#EAF4EE;border-left:2px solid var(--up);padding:7px 10px;border-radius:0 6px 6px 0;margin:8px 0;color:var(--ink)}
 .real .lbl{color:var(--up);letter-spacing:.04em}
 .idot{width:6px;height:6px;border-radius:50%;display:inline-block;margin-right:4px}
 .b-long{color:var(--up);font-weight:600}.b-short{color:var(--dn);font-weight:600}.b-none{color:var(--dim)}
-.st{font-size:9px;padding:1px 6px;border-radius:3px;font-weight:600;white-space:nowrap}
-.st-extracted{background:#1d3a2e;color:var(--up)}
-.st-needs_vision{background:#3a3320;color:var(--live)}
-.st-dropped_tf{background:#2a2f38;color:var(--dead)}
-.st-stored{background:#22304a;color:#9db4e0}
-.st-open{background:#13314d;color:#5fa8e0}
-.st-pending{background:#2d2740;color:#b39ddb}
-.st-resolved{background:#1d3a2e;color:var(--up)}
-.st-invalidated{background:#2a2f38;color:var(--dead)}
-.st-no_venue{background:#2a2f38;color:var(--dead)}
-.st-expired{background:#2a2f38;color:var(--dead)}
-.thumb{width:42px;height:26px;object-fit:cover;border-radius:3px;border:1px solid var(--line);vertical-align:middle}
+.st{font-size:9px;padding:1px 6px;border-radius:4px;font-weight:600;white-space:nowrap}
+.st-extracted{background:#E3F1E9;color:var(--up)}
+.st-needs_vision{background:#F6EBD6;color:var(--live)}
+.st-dropped_tf{background:#ECEAE1;color:var(--dead)}
+.st-stored{background:#F1ECF8;color:#6E5BA8}
+.st-open{background:#E4EEF7;color:#2D6CA8}
+.st-pending{background:#F1ECF8;color:#6E5BA8}
+.st-resolved{background:#E3F1E9;color:var(--up)}
+.st-invalidated{background:#ECEAE1;color:var(--dead)}
+.st-no_venue{background:#ECEAE1;color:var(--dead)}
+.st-expired{background:#ECEAE1;color:var(--dead)}
+.thumb{width:42px;height:26px;object-fit:cover;border-radius:4px;border:1px solid var(--line);vertical-align:middle}
 .bas{font-size:9px;color:var(--dim)}.bas-chart{color:var(--up)}.bas-generated{color:var(--live)}
-a.idea-link{color:var(--live);text-decoration:none}a.idea-link:hover{text-decoration:underline}
+a.idea-link{color:var(--accent);text-decoration:none}a.idea-link:hover{text-decoration:underline}
 /* stat cards + dropdowns */
 .statgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin:4px 0 14px}
-.stat{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:10px 12px}
+.stat{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:10px 12px}
 .stat .v{font:600 22px var(--mono);font-variant-numeric:tabular-nums}
 .stat .l{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em;margin-bottom:3px}
-details#det_ongoing,details#det_prev{background:var(--panel);border:1px solid var(--line);border-radius:10px;margin-bottom:10px;padding:4px 0}
+details#det_ongoing,details#det_prev{background:var(--panel);border:1px solid var(--line);border-radius:12px;margin-bottom:10px;padding:4px 0}
 details#det_ongoing>summary,details#det_prev>summary{font:600 13px var(--mono);text-transform:uppercase;letter-spacing:.04em;color:var(--ink);cursor:pointer;padding:10px 14px;list-style:none}
 details>summary::-webkit-details-marker{display:none}
-details#det_ongoing>summary:before,details#det_prev>summary:before{content:'▸ ';color:var(--live)}
+details#det_ongoing>summary:before,details#det_prev>summary:before{content:'▸ ';color:var(--accent)}
 details[open]#det_ongoing>summary:before,details[open] >summary:before{content:'▾ '}
 .cnt{color:var(--dim);font-weight:400}
 .tw{overflow-x:auto;padding:0 6px 6px}
-.broker{font-size:10px;padding:1px 6px;border-radius:3px;font-weight:600;white-space:nowrap}
-.broker-alpaca{background:#13314d;color:#5fa8e0}.broker-sim{background:#2d2740;color:#b39ddb}
+.broker{font-size:10px;padding:1px 6px;border-radius:4px;font-weight:600;white-space:nowrap}
+.broker-alpaca{background:#E4EEF7;color:#2D6CA8}.broker-sim{background:#F1ECF8;color:#6E5BA8}
 /* collapsible strategy cards */
-details.scard{background:var(--panel);border:1px solid var(--line);border-radius:10px;overflow:hidden}
-details.scard[open]{border-color:var(--up);box-shadow:0 0 0 1px rgba(63,182,139,.2)}
-details.scard>summary{cursor:pointer;list-style:none;padding:12px 14px}
+details.scard{background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden;transition:box-shadow .15s,border-color .15s}
+details.scard[open]{border-color:var(--up);box-shadow:0 0 0 1px rgba(31,138,91,.18)}
+details.scard>summary{cursor:pointer;list-style:none;padding:14px 16px}
 details.scard>summary::-webkit-details-marker{display:none}
-details.scard>summary:before{content:'▸';color:var(--up);float:right;font:600 13px var(--mono)}
+details.scard>summary:before{content:'▸';color:var(--accent);float:right;font:600 13px var(--mono)}
 details.scard[open]>summary:before{content:'▾'}
 details.scard .ph{display:flex;align-items:center;gap:8px;margin-bottom:10px}
 details.scard .ph h2{font:600 14px var(--mono);color:var(--ink)}
-.sbadge{font:600 9px var(--mono);text-transform:uppercase;letter-spacing:.05em;padding:2px 7px;border-radius:4px;white-space:nowrap}
+.sbadge{font:600 9px var(--mono);text-transform:uppercase;letter-spacing:.05em;padding:2px 7px;border-radius:5px;white-space:nowrap}
 .cardsum{display:grid;grid-template-columns:repeat(auto-fit,minmax(78px,1fr));gap:6px 12px}
 .si{display:flex;flex-direction:column;gap:1px}
 .si .sl{font-size:9px;color:var(--dim);text-transform:uppercase;letter-spacing:.04em}
 .si .sv{font:600 14px var(--mono);font-variant-numeric:tabular-nums}
-.carddetail{padding:0 14px 14px;border-top:1px solid var(--line);margin-top:2px}
+.carddetail{padding:0 16px 16px;border-top:1px solid var(--line);margin-top:2px}
 .carddetail .method{margin:10px 0}
 </style>
-<h1>STRATEGY TRACKER</h1>
+<h1>Strategy Tracker</h1>
 <div class=sub id=sub>loading…</div>
 
 
-<h2 class=sec id=sec_live><span class="livedot"></span>STRATEGIES — real broker results <small>· click a card to expand · live (real fills) first, then strategies awaiting execution</small></h2>
+<h2 class=sec id=sec_live><span class="livedot"></span>Strategies — real broker results <small>· click a card to expand · live (real fills) first, then strategies awaiting execution</small></h2>
 <div class=grid id=grid_live></div>
 <div class=empty id=no_strats style="display:none">No strategy has real broker fills yet — results appear once a live demo order resolves.</div>
 <script>
@@ -326,13 +331,13 @@ function runtimeStr(ts){ if(!ts) return '—'; let s=Math.max(0,Math.floor(Date.
   return d?`${d}d ${h}h`:(h?`${h}h ${m}m`:`${m}m`); }
 function si(l,v,cls){ return `<div class=si><span class=sl>${l}</span><span class="sv ${cls||''}">${v}</span></div>`; }
 function buildChart(name,c){ const ctx=document.getElementById('cv_'+name); if(!ctx||!c.equity||!c.equity.length) return;
-  const col=c.equity[c.equity.length-1]>=0?'#3FB68B':'#E0556B';
+  const col=c.equity[c.equity.length-1]>=0?'#1F8A5B':'#CE4A3A';
   if(charts[name]){charts[name].data.labels=c.equity.map((_,i)=>i+1);charts[name].data.datasets[0].data=c.equity;
     charts[name].data.datasets[0].borderColor=col;charts[name].update('none');return;}
   charts[name]=new Chart(ctx,{type:'line',data:{labels:c.equity.map((_,i)=>i+1),
     datasets:[{data:c.equity,borderColor:col,pointRadius:0,tension:.2}]},
-    options:{plugins:{legend:{display:false},title:{display:true,text:'cumulative bps',color:'#8593AC',font:{size:10}}},
-      scales:{x:{display:false},y:{grid:{color:'#1E2A44'}}}}}); }
+    options:{plugins:{legend:{display:false},title:{display:true,text:'cumulative bps',color:'#78766C',font:{size:10}}},
+      scales:{x:{display:false},y:{grid:{color:'#E7E3D6'}}}}}); }
 async function tick(){
  const s=await(await fetch('/api/stats')).json();
  document.getElementById('sub').textContent='updated '+new Date(s.last_update*1000).toLocaleTimeString();
@@ -349,13 +354,13 @@ async function tick(){
    <details class=scard>
      <summary>
        <div class=ph><h2>${c.label}</h2>${c.group==='live'
-         ?'<span class=sbadge style="background:#13311f;color:var(--up)">● LIVE</span>'
-         :'<span class=sbadge style="background:#1b2336;color:var(--dim)">no fills yet</span>'}</div>
+         ?'<span class=sbadge style="background:#E3F1E9;color:var(--up)">● LIVE</span>'
+         :'<span class=sbadge style="background:#EFEDE4;color:var(--dim)">no fills yet</span>'}</div>
        <div class=cardsum>
          ${si('P&amp;L', has?pnlStr(c):'—', has?pc:'')}
          ${si('Win / Loss', c.hit==null?'—':pct(c.hit), winc)}
          ${si('Trades', tradesTxt)}
-         ${si('Avg R:R', c.avg_rr==null?'—':c.avg_rr)}
+         ${si('Realized R:R', c.avg_rr==null?'—':c.avg_rr)}
          ${si('Broker', c.broker||'—')}
          ${si('Running', runtimeStr(c.since_ts))}
        </div>
@@ -402,13 +407,13 @@ ADMIN_HTML = r"""<!doctype html><meta charset=utf-8>
 <meta name=viewport content="width=device-width,initial-scale=1">
 <title>Strategy Lab — Admin</title>
 <style>
-body{background:#0B1220;color:#D7E0EF;font:14px/1.5 ui-monospace,monospace;padding:18px;max-width:1100px;margin:auto}
-h1{font-size:16px}h2{font-size:14px;color:#F5A623;border-bottom:1px solid #1E2A44;padding-bottom:4px;margin-top:26px}
-.s{background:#121B2E;border:1px solid #1E2A44;border-radius:8px;padding:14px;margin:12px 0}
-.k{color:#8593AC}.v{color:#D7E0EF}.pos{color:#3FB68B}.neg{color:#E0556B}
-pre{white-space:pre-wrap;word-break:break-word;background:#0B1220;border:1px solid #1E2A44;padding:8px;border-radius:6px;font-size:12px}
-a{color:#F5A623}.row{margin:3px 0}
-table{width:100%;border-collapse:collapse;font-size:12px}td,th{text-align:left;padding:2px 6px;border-bottom:1px solid #1E2A44}
+body{background:#FAF9F5;color:#23211C;font:14px/1.6 ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;padding:28px 18px;max-width:1100px;margin:auto;-webkit-font-smoothing:antialiased}
+h1{font:500 22px ui-serif,Georgia,'Times New Roman',serif}h2{font:600 14px ui-sans-serif,system-ui,sans-serif;color:#C15F3C;border-bottom:1px solid #E7E3D6;padding-bottom:4px;margin-top:26px}
+.s{background:#FFFFFF;border:1px solid #E7E3D6;border-radius:12px;padding:16px;margin:12px 0}
+.k{color:#78766C}.v{color:#23211C}.pos{color:#1F8A5B}.neg{color:#CE4A3A}
+pre{white-space:pre-wrap;word-break:break-word;background:#F4F2EA;border:1px solid #E7E3D6;padding:8px;border-radius:8px;font-size:12px;font-family:'IBM Plex Mono',ui-monospace,monospace}
+a{color:#C15F3C}.row{margin:3px 0}
+table{width:100%;border-collapse:collapse;font-size:12px}td,th{text-align:left;padding:3px 6px;border-bottom:1px solid #E7E3D6}
 </style>
 <h1>STRATEGY LAB — ADMIN <span class=k id=sub></span></h1>
 <div id=app>authenticating…</div>
